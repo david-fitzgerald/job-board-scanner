@@ -72,6 +72,16 @@ class DiscoverTest(unittest.TestCase):
         self.assertEqual([b for b, _ in self.discovered()], ["ashby:acme", "ashby:beta", "ashby:gamma"])
         self.assertIn("discover_failed", (self.home / "runs.log").read_text())
 
+    def test_unwritable_database_is_a_usage_error_and_keeps_the_list(self):
+        self.assertEqual(self.run_cli()[0], 0)
+        self.serve({CRAWLS[0]: captures("delta"), CRAWLS[1]: captures("delta"), CRAWLS[2]: captures("delta")})
+        database = self.home / "jobscan.sqlite"
+        database.chmod(0o444)
+        self.addCleanup(database.chmod, 0o644)
+        self.assertEqual(self.run_cli(), (2, ""))
+        database.chmod(0o644)
+        self.assertEqual([b for b, _ in self.discovered()], ["ashby:acme", "ashby:beta", "ashby:gamma"])
+
     def test_refused_while_a_run_holds_the_lock(self):
         with (self.home / ".lock").open("w") as held:
             fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
