@@ -1,0 +1,4 @@
+titles = ["Account Executive"]
+locations = ["London"]
+eligible_where = "the UK, working from London"
+tags = ["founding", "location_eligible", "segment", "language_required", "tech_company"]

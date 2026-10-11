@@ -1,0 +1,7 @@
+boards_file = "boards.json"
+
+[model]
+base_url = "https://openrouter.ai/api/v1"
+slug = "deepseek/deepseek-v4-flash"
+provider = "parasail"
+quantization = "fp8"
