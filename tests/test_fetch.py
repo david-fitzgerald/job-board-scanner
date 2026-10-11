@@ -55,6 +55,15 @@ class AshbyBoardTest(unittest.TestCase):
         self.assertEqual([(b.company, b.id) for b in boards], [("Acme", "ashby:acme")])
         self.assertEqual(skipped, 2)
 
+    def test_load_boards_rejects_lone_surrogates(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = Path(d) / "boards.json"
+            for entry in ['{"company": "\\ud800", "board_url": "https://jobs.ashbyhq.com/acme"}',
+                          '{"company": "Acme", "board_url": "https://jobs.ashbyhq.com/\\ud800"}']:
+                path.write_text('{"companies": [' + entry + ']}')
+                with self.assertRaisesRegex(ConfigError, "entry 0 is not valid Unicode"):
+                    fetch.load_boards(path)
+
     def test_load_boards_rejects_bad_file(self):
         with tempfile.TemporaryDirectory() as d:
             path = Path(d) / "boards.json"

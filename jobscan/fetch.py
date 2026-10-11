@@ -49,8 +49,11 @@ def load_boards(path: Path) -> tuple[list[Board], int]:
     if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
         raise ConfigError(f"{path}: `companies` must be a list of objects")
     boards, skipped = {}, 0
-    for entry in entries:
+    for n, entry in enumerate(entries):
         company, url = entry.get("company"), entry.get("board_url")
+        for text in (company, url):
+            if isinstance(text, str) and not _encodable(text):  # a lone surrogate can't be stored
+                raise ConfigError(f"{path}: entry {n} is not valid Unicode")
         found = next((b for adapter in ADAPTERS.values()
                       if (b := adapter.board(company if isinstance(company, str) else "",
                                              url if isinstance(url, str) else "")) is not None), None)
@@ -59,6 +62,14 @@ def load_boards(path: Path) -> tuple[list[Board], int]:
             continue
         boards.setdefault(found.id, found)
     return list(boards.values()), skipped
+
+
+def _encodable(text: str) -> bool:
+    try:
+        text.encode()
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def fetch_each(boards: list[Board]) -> Iterator[BoardFetch | BoardFailure]:
