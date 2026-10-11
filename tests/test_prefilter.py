@@ -36,6 +36,11 @@ class PrefilterTest(unittest.TestCase):
                                  PROFILE))
         self.assertFalse(matches(posting("Account Executive", ""), PROFILE))
 
+    def test_unicode_case_folding(self):
+        only = Profile(name="ae", titles=("Account Executive",), exclude_titles=(), locations=("Weißenburg",),
+                       eligible_where="the UK", tags=("founding",))
+        self.assertTrue(matches(posting("ACCOUNT EXECUTIVE", "WEISSENBURG"), only))
+
     def test_punctuation_ended_term_matches_itself(self):
         only = Profile(name="ae", titles=("Account Executive",), exclude_titles=(), locations=("Remote (UK)",),
                        eligible_where="the UK", tags=("founding",))

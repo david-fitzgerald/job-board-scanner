@@ -23,6 +23,9 @@ class AshbyBoardTest(unittest.TestCase):
         self.assertIsNone(ashby.board("Acme", "https://boards.greenhouse.io/acme"))
         self.assertIsNone(ashby.board("Acme", "https://[::1/posting-api/job-board/acme"))
         self.assertIsNone(ashby.board("Acme", "https://jobs.ashbyhq.com:99999/acme"))
+        for url in ["/posting-api/job-board/acme", "http:///posting-api/job-board/acme",
+                    "file://host/posting-api/job-board/acme"]:
+            self.assertIsNone(ashby.board("Acme", url), url)
 
     def test_load_boards_dedupes_and_counts_skipped(self):
         with tempfile.TemporaryDirectory() as d:

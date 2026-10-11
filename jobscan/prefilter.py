@@ -12,10 +12,11 @@ def matches(posting: Posting, profile: Profile) -> bool:
 
 
 def _any_term(terms: tuple[str, ...], text: str) -> bool:
-    return any(_term_pattern(term).search(text) for term in terms)
+    folded = text.casefold()
+    return any(_term_pattern(term).search(folded) for term in terms)
 
 
 def _term_pattern(term: str) -> re.Pattern:
     # Word-adjacent, not \b: "Remote (UK)" must match itself, "UK" must not hit "Ukraine",
-    # and "intern" must not hit "International".
-    return re.compile(rf"(?<!\w){re.escape(term.strip())}(?!\w)", re.IGNORECASE)
+    # and "intern" must not hit "International". Both sides are case-folded ("ß" matches "SS").
+    return re.compile(rf"(?<!\w){re.escape(term.strip().casefold())}(?!\w)")

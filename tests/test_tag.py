@@ -197,6 +197,28 @@ class TagPostingTest(unittest.TestCase):
         self.assertIsInstance(attempt, tag.TagFailure)
         self.assertNotIn("jane", attempt.error)
 
+    def test_dropped_connection_then_success_marks_billing_unknown(self):
+        calls = iter(["drop", "ok"])
+        real_call = tag._call
+
+        def flaky(*args):
+            if next(calls) == "drop":
+                raise ConnectionResetError
+            return real_call(*args)
+
+        self.server.routes["/chat/completions"] = (200, lambda payload: model_reply(json.loads(reply()), cost=0.002))
+        with mock.patch.object(tag, "_call", flaky):
+            attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagSuccess)
+        self.assertEqual((attempt.usage.cost, attempt.usage.cost_reported), (0.002, False))
+
+    def test_huge_integer_in_reply_is_an_invalid_reply(self):
+        self.server.routes["/chat/completions"] = (
+            200, lambda payload: (200, {"choices": [{"message": {"content": '{"founding": ' + "9" * 5000 + "}"}}],
+                                        "usage": {"cost": 0.001}}))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertEqual((type(attempt), attempt.error), (tag.TagFailure, "invalid reply: not JSON"))
+
     def test_redirects_are_not_followed(self):
         elsewhere = FakeServer()
         self.addCleanup(elsewhere.close)

@@ -22,6 +22,8 @@ def board(company: str, board_url: str) -> Board | None:
         parsed.port  # raises on a malformed port
     except ValueError:
         return None
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        return None
     path = [p for p in parsed.path.split("/") if p]
     if path[:2] == ["posting-api", "job-board"] and len(path) > 2:
         api_url = f"{parsed.scheme}://{parsed.netloc}/posting-api/job-board/{path[2]}"

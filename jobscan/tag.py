@@ -172,6 +172,8 @@ def tag_posting(posting: Posting, defs: list[TagDef], model: ModelConfig, api_ke
         # Exception classes only, never their text: request errors can echo headers, and the key is one.
         except (OSError, http.client.HTTPException, ValueError) as e:
             error, status = type(e).__name__, None
+            if not isinstance(e, ConnectionRefusedError):  # the request may have been sent and billed
+                usage += Usage(cost_reported=False)
             continue
         usage += reply.usage
         try:
@@ -241,7 +243,7 @@ def _finite_non_negative(value) -> bool:
 def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str, TagResult]:
     try:
         data = json.loads(content)
-    except (TypeError, json.JSONDecodeError):
+    except ValueError:  # includes integers past the interpreter's digit limit
         raise ReplyError("not JSON") from None
     if not isinstance(data, dict) or set(data) != {d.name for d in defs}:
         raise ReplyError("not an object with exactly the requested tags")
