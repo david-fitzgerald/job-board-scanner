@@ -1,0 +1,109 @@
+"""Config and profile loading: TOML under $JOBSCAN_HOME parsed into typed records, or ConfigError."""
+import os
+import tomllib
+from dataclasses import dataclass
+from pathlib import Path
+
+
+class ConfigError(Exception):
+    """A config or profile problem the user must fix before any work starts (exit 2)."""
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    base_url: str
+    slug: str
+    provider: str | None
+    quantization: str | None
+
+    @property
+    def id(self) -> str:
+        """Everything that decides which weights answer: a cached tag result is valid only for the same id."""
+        return "|".join([self.base_url, self.slug, self.provider or "", self.quantization or ""])
+
+
+@dataclass(frozen=True)
+class Config:
+    home: Path
+    boards_file: Path
+    model: ModelConfig
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    titles: tuple[str, ...]
+    exclude_titles: tuple[str, ...]
+    locations: tuple[str, ...]
+    eligible_where: str
+    tags: tuple[str, ...]
+
+
+def jobscan_home() -> Path:
+    return Path(os.environ.get("JOBSCAN_HOME") or "~/.jobscan").expanduser()
+
+
+def load_config(home: Path) -> Config:
+    path = home / "config.toml"
+    data = _read_toml(path)
+    model = data.get("model")
+    if not isinstance(model, dict):
+        raise ConfigError(f"{path}: missing [model] table")
+    boards_file = Path(_string(data, "boards_file", path)).expanduser()
+    if not boards_file.is_absolute():
+        boards_file = home / boards_file
+    return Config(
+        home=home,
+        boards_file=boards_file,
+        model=ModelConfig(
+            base_url=_string(model, "base_url", path).rstrip("/"),
+            slug=_string(model, "slug", path),
+            provider=_string(model, "provider", path, required=False),
+            quantization=_string(model, "quantization", path, required=False),
+        ),
+    )
+
+
+def load_profile(home: Path) -> Profile:
+    """The skeleton serves exactly one profile per install."""
+    files = sorted((home / "profiles").glob("*.toml"))
+    if len(files) != 1:
+        raise ConfigError(f"{home / 'profiles'}: expected exactly one profile, found {len(files)}")
+    path = files[0]
+    data = _read_toml(path)
+    return Profile(
+        name=path.stem,
+        titles=_strings(data, "titles", path),
+        exclude_titles=_strings(data, "exclude_titles", path, required=False),
+        locations=_strings(data, "locations", path),
+        eligible_where=_string(data, "eligible_where", path),
+        tags=_strings(data, "tags", path),
+    )
+
+
+def _read_toml(path: Path) -> dict:
+    try:
+        with path.open("rb") as f:
+            return tomllib.load(f)
+    except FileNotFoundError:
+        raise ConfigError(f"{path}: not found") from None
+    except tomllib.TOMLDecodeError as e:
+        raise ConfigError(f"{path}: {e}") from None
+
+
+def _string(data: dict, key: str, path: Path, required: bool = True) -> str | None:
+    value = data.get(key)
+    if value is None and not required:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ConfigError(f"{path}: `{key}` must be a non-empty string")
+    return value
+
+
+def _strings(data: dict, key: str, path: Path, required: bool = True) -> tuple[str, ...]:
+    value = data.get(key)
+    if value is None and not required:
+        return ()
+    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ConfigError(f"{path}: `{key}` must be a non-empty list of strings")
+    return tuple(value)
