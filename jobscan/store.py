@@ -2,11 +2,12 @@
 import hashlib
 import json
 import sqlite3
+from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
 
 from jobscan.config import ConfigError
-from jobscan.records import Posting
+from jobscan.records import Board, Posting
 from jobscan.tag import TagDef, TagResult
 
 SCHEMA = """
@@ -24,12 +25,19 @@ CREATE TABLE IF NOT EXISTS tag_results (
 CREATE TABLE IF NOT EXISTS deliveries (
     profile TEXT NOT NULL, posting_key TEXT NOT NULL, digest_path TEXT NOT NULL, PRIMARY KEY (profile, posting_key)
 );
+CREATE TABLE IF NOT EXISTS boards (
+    id TEXT PRIMARY KEY, ats TEXT NOT NULL, slug TEXT NOT NULL, api_url TEXT NOT NULL,
+    not_found INTEGER NOT NULL DEFAULT 0,  -- consecutive HTTP 404s; at DEAD_AFTER, run skips the board
+    discovered TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS runs (
     started TEXT NOT NULL, finished TEXT NOT NULL, boards_read INTEGER NOT NULL, boards_failed INTEGER NOT NULL,
     new INTEGER NOT NULL, tagged INTEGER NOT NULL, carried_over INTEGER NOT NULL, cost REAL NOT NULL,
     cost_complete INTEGER NOT NULL  -- 0 when some model reply reported no cost: `cost` is then a lower bound
 );
 """
+SCHEMA_VERSION = 1
+DEAD_AFTER = 3
 
 
 @dataclass(frozen=True)
@@ -62,10 +70,31 @@ def open_db(home: Path) -> sqlite3.Connection:
     try:
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
+        _migrate(conn)
     except sqlite3.Error as e:
         conn.close()
         raise ConfigError(f"{path}: cannot open database ({type(e).__name__}: {e})") from None
     return conn
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Version 1: Ashby slugs are case-folded in board ids and posting keys (`ashby:Clerk:1` → `ashby:clerk:1`), so
+    deliveries and cached tags follow their postings. One transaction; a key collision rolls it all back."""
+    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+        return
+    conn.create_function("fold_slug", 1, _fold_slug, deterministic=True)
+    with conn:
+        conn.execute("UPDATE postings SET key = fold_slug(key), board = fold_slug(board) WHERE ats = 'ashby'")
+        conn.execute("UPDATE deliveries SET posting_key = fold_slug(posting_key) WHERE posting_key LIKE 'ashby:%'")
+        conn.execute("UPDATE tag_results SET posting_key = fold_slug(posting_key) WHERE posting_key LIKE 'ashby:%'")
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+
+
+def _fold_slug(value: str) -> str:
+    """`ashby:Slug` → `ashby:slug`; `ashby:Slug:rest` → `ashby:slug:rest`."""
+    parts = value.split(":", 2)
+    parts[1] = parts[1].lower()
+    return ":".join(parts)
 
 
 def input_hash(posting: Posting) -> str:
@@ -91,20 +120,49 @@ def apply_fetch(conn: sqlite3.Connection, board: str, postings: tuple[Posting, .
         )
 
 
-def pending(conn: sqlite3.Connection, profile: str) -> list[StoredPosting]:
-    """Open postings never delivered to this profile, oldest first."""
+def pending(conn: sqlite3.Connection, profile: str, boards: set[str]) -> Iterator[StoredPosting]:
+    """Open postings of these boards never delivered to this profile, oldest first, one at a time: the caller
+    filters as it reads, so every stored description is never in memory at once."""
     rows = conn.execute(
         """SELECT * FROM postings
            WHERE closed = 0 AND key NOT IN (SELECT posting_key FROM deliveries WHERE profile = ?)
            ORDER BY first_seen, key""",
         (profile,),
     )
-    return [StoredPosting(
-        posting=Posting(key=r["key"], ats=r["ats"], board=r["board"], company=r["company"], title=r["title"],
-                        location=r["location"], url=r["url"], description=r["description"]),
-        input_hash=r["input_hash"],
-        first_seen=r["first_seen"],
-    ) for r in rows]
+    for r in rows:
+        if r["board"] not in boards:
+            continue
+        yield StoredPosting(
+            posting=Posting(key=r["key"], ats=r["ats"], board=r["board"], company=r["company"], title=r["title"],
+                            location=r["location"], url=r["url"], description=r["description"]),
+            input_hash=r["input_hash"],
+            first_seen=r["first_seen"],
+        )
+
+
+def replace_discovered(conn: sqlite3.Connection, boards: list[Board], now: str) -> None:
+    """Make `boards` the discovered set. A board still listed keeps its 404 count: being in an old crawl is no
+    evidence it exists today."""
+    with conn:
+        counts = {r["id"]: r["not_found"] for r in conn.execute("SELECT id, not_found FROM boards")}
+        conn.execute("DELETE FROM boards")
+        conn.executemany(
+            "INSERT INTO boards (id, ats, slug, api_url, not_found, discovered) VALUES (?, ?, ?, ?, ?, ?)",
+            [(b.id, b.ats, b.slug, b.api_url, counts.get(b.id, 0), now) for b in boards],
+        )
+
+
+def live_discovered(conn: sqlite3.Connection) -> list[Board]:
+    """Discovered boards short of DEAD_AFTER consecutive 404s. A discovered board's company name is its slug."""
+    rows = conn.execute("SELECT ats, slug, api_url FROM boards WHERE not_found < ? ORDER BY id", (DEAD_AFTER,))
+    return [Board(ats=r["ats"], slug=r["slug"], company=r["slug"], api_url=r["api_url"]) for r in rows]
+
+
+def record_board_outcomes(conn: sqlite3.Connection, read: list[str], not_found: list[str]) -> None:
+    """A fully read board resets its 404 count, a 404 adds one; other failures leave it as it is."""
+    with conn:
+        conn.executemany("UPDATE boards SET not_found = 0 WHERE id = ?", [(b,) for b in read])
+        conn.executemany("UPDATE boards SET not_found = not_found + 1 WHERE id = ?", [(b,) for b in not_found])
 
 
 def cached_results(conn: sqlite3.Connection, stored: StoredPosting, defs: list[TagDef], model_id: str,

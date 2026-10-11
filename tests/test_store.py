@@ -1,9 +1,11 @@
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
 
 from jobscan import store
-from jobscan.records import Posting
+from jobscan.config import ConfigError
+from jobscan.records import Board, Posting
 
 
 def posting(job_id, board="acme", title="Account Executive"):
@@ -58,3 +60,101 @@ class ApplyFetchTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+T0 = "2026-10-11T10:00:00.000000+00:00"
+
+
+class MigrationTest(unittest.TestCase):
+    """Version 0 databases hold Ashby slugs as the boards file wrote them; version 1 case-folds them."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.home = Path(tmp.name)
+
+    def version_0(self, keys):
+        conn = sqlite3.connect(self.home / "jobscan.sqlite")
+        conn.executescript(store.SCHEMA)
+        for key in keys:
+            board = key.rsplit(":", 1)[0]
+            conn.execute("INSERT INTO postings VALUES (?, 'ashby', ?, 'Clerk', 'AE', 'London', 'u', 'd', 'h', ?, ?, 0)",
+                         (key, board, T0, T0))
+            conn.execute("INSERT INTO tag_results VALUES (?, 'h', 'def', 'model', '\"yes\"', 'q', 1, 0)", (key,))
+        conn.execute("INSERT INTO deliveries VALUES ('david', ?, 'digest.md')", (keys[0],))
+        conn.commit()
+        conn.close()
+
+    def open(self):
+        conn = store.open_db(self.home)
+        self.addCleanup(conn.close)
+        return conn
+
+    def test_keys_boards_deliveries_and_cache_fold_together(self):
+        self.version_0(["ashby:Clerk:1", "ashby:Clerk:2", "ashby:Clerk:3"])
+        conn = self.open()
+        rows = conn.execute("SELECT key, board FROM postings ORDER BY key").fetchall()
+        self.assertEqual([tuple(r) for r in rows], [(f"ashby:clerk:{n}", "ashby:clerk") for n in (1, 2, 3)])
+        self.assertEqual([r[0] for r in conn.execute("SELECT posting_key FROM deliveries")], ["ashby:clerk:1"])
+        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT posting_key FROM tag_results")),
+                         ["ashby:clerk:1", "ashby:clerk:2", "ashby:clerk:3"])
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], store.SCHEMA_VERSION)
+        # The folded board behaves as one board: a read closes what it no longer lists and the delivered posting
+        # stays delivered.
+        store.apply_fetch(conn, "ashby:clerk", (posting("1", "clerk"), posting("2", "clerk")), T0)
+        self.assertEqual(conn.execute("SELECT closed FROM postings WHERE key = 'ashby:clerk:3'").fetchone()[0], 1)
+        pending = [s.posting.key for s in store.pending(conn, "david", {"ashby:clerk"})]
+        self.assertEqual(pending, ["ashby:clerk:2"])
+
+    def test_reopening_is_a_no_op(self):
+        self.version_0(["ashby:Clerk:1"])
+        self.open().close()
+        conn = self.open()
+        self.assertEqual([r[0] for r in conn.execute("SELECT key FROM postings")], ["ashby:clerk:1"])
+
+    def test_collision_rolls_back_and_is_a_config_error(self):
+        self.version_0(["ashby:Clerk:1", "ashby:clerk:1"])
+        with self.assertRaises(ConfigError):
+            store.open_db(self.home)
+        conn = sqlite3.connect(self.home / "jobscan.sqlite")
+        self.addCleanup(conn.close)
+        self.assertEqual(sorted(r[0] for r in conn.execute("SELECT key FROM postings")),
+                         ["ashby:Clerk:1", "ashby:clerk:1"])
+        self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
+
+
+class BoardsTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.conn = store.open_db(Path(tmp.name))
+        self.addCleanup(self.conn.close)
+
+    def board(self, slug):
+        return Board(ats="ashby", slug=slug, company=slug, api_url=f"https://api.ashbyhq.com/x/{slug}")
+
+    def counts(self):
+        return {r["id"]: r["not_found"] for r in self.conn.execute("SELECT id, not_found FROM boards")}
+
+    def test_outcomes_reset_increment_or_leave_the_404_count(self):
+        store.replace_discovered(self.conn, [self.board(s) for s in ("a", "b", "c")], T0)
+        store.record_board_outcomes(self.conn, read=[], not_found=["ashby:a", "ashby:b"])
+        store.record_board_outcomes(self.conn, read=["ashby:a"], not_found=["ashby:b"])
+        store.record_board_outcomes(self.conn, read=[], not_found=[])  # c failed transiently: unchanged
+        self.assertEqual(self.counts(), {"ashby:a": 0, "ashby:b": 2, "ashby:c": 0})
+
+    def test_dead_boards_are_not_live_and_replacing_keeps_counts(self):
+        store.replace_discovered(self.conn, [self.board(s) for s in ("a", "b")], T0)
+        for _ in range(store.DEAD_AFTER):
+            store.record_board_outcomes(self.conn, read=[], not_found=["ashby:a"])
+        self.assertEqual([b.id for b in store.live_discovered(self.conn)], ["ashby:b"])
+        store.replace_discovered(self.conn, [self.board(s) for s in ("a", "c")], T0)
+        self.assertEqual(self.counts(), {"ashby:a": store.DEAD_AFTER, "ashby:c": 0})
+        self.assertEqual([(b.id, b.company) for b in store.live_discovered(self.conn)], [("ashby:c", "c")])
+
+    def test_pending_reads_only_the_given_boards(self):
+        store.apply_fetch(self.conn, "ashby:acme", (posting("1"),), T0)
+        store.apply_fetch(self.conn, "ashby:beta", (posting("1", "beta"),), T0)
+        rows = store.pending(self.conn, "david", {"ashby:beta"})
+        self.assertNotIsInstance(rows, list)
+        self.assertEqual([s.posting.key for s in rows], ["ashby:beta:1"])

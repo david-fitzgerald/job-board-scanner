@@ -19,6 +19,13 @@ class AshbyBoardTest(unittest.TestCase):
         self.assertEqual(ashby.board("Acme", "http://127.0.0.1:9/posting-api/job-board/acme?x=1").api_url,
                          "http://127.0.0.1:9/posting-api/job-board/acme")
 
+    def test_slug_is_case_folded_in_both_url_forms(self):
+        for url in ["https://jobs.ashbyhq.com/MotherDuck", "https://api.ashbyhq.com/posting-api/job-board/MotherDuck"]:
+            board = ashby.board("MotherDuck", url)
+            self.assertEqual((board.id, board.api_url, board.company),
+                             ("ashby:motherduck", "https://api.ashbyhq.com/posting-api/job-board/motherduck",
+                              "MotherDuck"), url)
+
     def test_other_ats_and_malformed_urls_are_none(self):
         self.assertIsNone(ashby.board("Acme", "https://boards.greenhouse.io/acme"))
         self.assertIsNone(ashby.board("Acme", "https://[::1/posting-api/job-board/acme"))
@@ -33,6 +40,7 @@ class AshbyBoardTest(unittest.TestCase):
             path.write_text(json.dumps({"companies": [
                 {"company": "Acme", "board_url": "https://jobs.ashbyhq.com/acme"},
                 {"company": "Acme again", "board_url": "https://api.ashbyhq.com/posting-api/job-board/acme"},
+                {"company": "ACME", "board_url": "https://jobs.ashbyhq.com/ACME"},
                 {"company": "Other", "board_url": "https://boards.greenhouse.io/other"},
                 {"company": None, "board_url": 7},
             ]}))
@@ -120,6 +128,13 @@ class FetchBoardTest(unittest.TestCase):
         self.serve("acme", 503, {"error": "busy"})
         self.assertEqual(self.fetch_one(), "HTTP 503")
         self.assertEqual(len(self.server.requests), 3)
+
+    def test_failure_carries_the_http_status(self):
+        self.serve("gone", 404, {"error": "not found"})
+        self.serve("busy", 503, {"error": "busy"})
+        self.serve("bad", 200, "{not json")
+        _, failed = fetch.fetch_all([self.board(s) for s in ("gone", "busy", "bad")])
+        self.assertEqual({f.board.slug: f.http_status for f in failed}, {"gone": 404, "busy": 503, "bad": None})
 
     def test_unreachable_board_is_a_failure(self):
         board = Board(ats="ashby", slug="gone", company="Gone", api_url="http://127.0.0.1:9/posting-api/job-board/gone")

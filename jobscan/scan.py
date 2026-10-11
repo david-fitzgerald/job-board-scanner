@@ -28,8 +28,8 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
     started = _now()
     conn = store.open_db(config.home)
     try:
-        boards_read, boards_failed = _fetch(conn, config, started)
-        matched = [p for p in store.pending(conn, profile.name) if prefilter.matches(p.posting, profile)]
+        boards_read, boards_failed, eligible = _fetch(conn, config, started)
+        matched = [p for p in store.pending(conn, profile.name, eligible) if prefilter.matches(p.posting, profile)]
         entries, tagged, usage = _tag(conn, matched, defs, config)
         outcome = _digest(conn, config, profile, entries, carried_over=len(matched) - len(entries))
         store.record_run(conn, store.RunRecord(
@@ -41,7 +41,9 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
         conn.close()
 
 
-def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int]:
+def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int, set[str]]:
+    """Fetches and stores every board; returns boards read, boards failed, and the boards whose postings may be
+    delivered this run: those read, and those failing for a reason that may clear (not a 404: that board is gone)."""
     boards, skipped = fetch.load_boards(config.boards_file)
     log.info("fetch_start boards=%d skipped_unrecognised=%d", len(boards), skipped)
     fetched, failed = fetch.fetch_all(boards)
@@ -52,7 +54,8 @@ def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int
                     failure.reason)
     log.info("fetch_done boards_read=%d boards_failed=%d postings=%d", len(fetched), len(failed),
              sum(len(r.postings) for r in fetched))
-    return len(fetched), len(failed)
+    eligible = {r.board.id for r in fetched} | {f.board.id for f in failed if f.http_status != 404}
+    return len(fetched), len(failed), eligible
 
 
 def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: list[tag.TagDef], config: Config,

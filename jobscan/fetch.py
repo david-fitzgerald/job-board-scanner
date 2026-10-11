@@ -31,6 +31,7 @@ class BoardFetch:
 class BoardFailure:
     board: Board
     reason: str
+    http_status: int | None = None  # 404 means the board is gone; anything else may clear by the next run
 
 
 def load_boards(path: Path) -> tuple[list[Board], int]:
@@ -68,7 +69,7 @@ def _fetch_isolated(board: Board) -> BoardFetch | BoardFailure:
     # OSError covers URLError, timeouts and resets; ValueError covers bad JSON and bad UTF-8;
     # RecursionError covers deeply nested JSON on Python < 3.14.
     except (OSError, http.client.HTTPException, ValueError, RecursionError, BoardError) as e:
-        return BoardFailure(board, _reason(e))
+        return BoardFailure(board, _reason(e), e.code if isinstance(e, urllib.error.HTTPError) else None)
 
 
 def _get_json(url: str):

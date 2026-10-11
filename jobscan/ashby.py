@@ -10,13 +10,15 @@ from jobscan.records import Board, BoardError, Posting
 
 ATS = "ashby"
 DISPLAY_NAME = "Ashby"
+CRAWL_HOST = "jobs.ashbyhq.com"  # where Common Crawl captures this ATS's boards
 API = "https://api.ashbyhq.com/posting-api/job-board/"
 
 
 def board(company: str, board_url: str) -> Board | None:
     """A Board for either URL form the map stores: the human board URL (jobs.ashbyhq.com/<slug>) or a posting-API
     URL on any host (how tests point at a fake server), normalised to scheme://host/posting-api/job-board/<slug>.
-    None when the URL isn't recognisably Ashby's."""
+    Ashby slugs are case-insensitive, so the slug is case-folded: one board, one id and one set of posting keys,
+    however a source writes it. None when the URL isn't recognisably Ashby's."""
     try:
         parsed = urlparse(board_url)
         parsed.port  # noqa: B018 -- raises on a malformed port
@@ -26,10 +28,11 @@ def board(company: str, board_url: str) -> Board | None:
         return None
     path = [p for p in parsed.path.split("/") if p]
     if path[:2] == ["posting-api", "job-board"] and len(path) > 2:
-        api_url = f"{parsed.scheme}://{parsed.netloc}/posting-api/job-board/{path[2]}"
-        slug = path[2]
+        slug = path[2].lower()
+        api_url = f"{parsed.scheme}://{parsed.netloc}/posting-api/job-board/{slug}"
     elif parsed.netloc == "jobs.ashbyhq.com" and path:
-        api_url, slug = API + path[0], path[0]
+        slug = path[0].lower()
+        api_url = API + slug
     else:
         return None
     return Board(ats=ATS, slug=slug, company=company or slug, api_url=api_url)
