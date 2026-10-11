@@ -1,8 +1,9 @@
 """Config and profile loading: TOML under $JOBSCAN_HOME parsed into typed records, or ConfigError."""
 import os
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 class ConfigError(Exception):
@@ -27,6 +28,7 @@ class Config:
     home: Path
     boards_file: Path
     model: ModelConfig
+    api_key: str | None = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -52,16 +54,19 @@ def load_config(home: Path) -> Config:
     boards_file = Path(_string(data, "boards_file", path)).expanduser()
     if not boards_file.is_absolute():
         boards_file = home / boards_file
-    return Config(
-        home=home,
-        boards_file=boards_file,
-        model=ModelConfig(
-            base_url=_string(model, "base_url", path).rstrip("/"),
-            slug=_string(model, "slug", path),
-            provider=_string(model, "provider", path, required=False),
-            quantization=_string(model, "quantization", path, required=False),
-        ),
+    model_config = ModelConfig(
+        base_url=_string(model, "base_url", path).rstrip("/"),
+        slug=_string(model, "slug", path),
+        provider=_string(model, "provider", path, required=False),
+        quantization=_string(model, "quantization", path, required=False),
     )
+    # The OpenRouter key goes to OpenRouter only, never to another configured endpoint.
+    api_key = None
+    if urlparse(model_config.base_url).hostname == "openrouter.ai":
+        api_key = os.environ.get("OPENROUTER_API_KEY") or None
+        if api_key is None:
+            raise ConfigError("OPENROUTER_API_KEY is not set")
+    return Config(home=home, boards_file=boards_file, model=model_config, api_key=api_key)
 
 
 def load_profile(home: Path) -> Profile:

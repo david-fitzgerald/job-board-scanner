@@ -1,0 +1,51 @@
+# Built-in tag definitions. The model sees `definition` verbatim (after {eligible_where} is filled in from the
+# profile). `values` lists the allowed answers; a tag without `values` takes free text. `multi` tags answer
+# with a list of values (empty = the posting doesn't say). `default` is the answer when the posting is silent,
+# which needs no quote. founding and language_required follow the G2 labelling guide v2.1.0.
+
+[founding]
+values = ["yes", "no"]
+default = "no"
+definition = """
+The first and only hire in the role's own function **at the company**: the first and only seller for a sales role, the first and only PM for a product role. First in a region, a country or one product line of a company that already sells elsewhere is `no`. A "founding" title alone doesn't make it so — titles are inflated.
+- **yes:** the posting says the role is first in its function ("founding AE", "first sales hire", "first PM", "build sales from zero") **and** mentions no one already in that function — no sales leader to report to, no other sellers.
+- **no:** everything else. In particular: a sales leader to report to anywhere (Head of Revenue, VP Sales, CRO, sales manager), other sellers ("join our sales team", "one of our AEs", "one of our first sales hires"), or simply no mention of being first. Being the first seller in the UK/EMEA while reporting to an existing sales leader elsewhere is `no`.
+- **Default `no`:** `founding` never takes `unknown`.
+"""
+
+[location_eligible]
+values = ["yes", "no", "unknown"]
+definition = """
+Someone who wants to work from {eligible_where} can do this job.
+- **yes:** the location field or text includes a matching location, or remote work open to it: a remote region that names it ("Remote — UK or Ireland", "EMEA remote incl. UK"). Multi-city listings that include a matching city count.
+- **no:** every listed location is outside it (watch for lookalike place names, such as Manchester, NH for Manchester, UK), or the text requires living somewhere else.
+- **unknown:** a remote region that doesn't name it, with nothing ruling it out (such as "Remote — Europe" when the question is the UK).
+- Visa sponsorship is not part of this tag.
+"""
+
+[segment]
+values = ["enterprise", "mid_market", "smb"]
+multi = true
+definition = """
+The customer sizes this sales role sells to. List every segment the title or description assigns to the role.
+- Strategic, majors, large or key accounts → `enterprise`. "Commercial" → read the accounts described; don't assume.
+- If the title names a segment, include it.
+- Return an empty list when the posting doesn't say, or when the role isn't a sales role.
+"""
+
+[language_required]
+default = "no"
+definition = """
+A language other than English is required. Answer `no` or the language name (`German`, `French`, …).
+- Default `no`: a posting that names no other language doesn't require one.
+- "Nice to have", "a plus" or "preferred" is `no`. "Fluent German required", "German speaker" in the title → `German`.
+"""
+
+[tech_company]
+values = ["yes", "no", "unknown"]
+definition = """
+The company's main product is technology: software, SaaS, AI/ML, developer, data or security tools, or hardware such as devices and chips. Judge from what the posting says the company sells.
+- **yes:** includes a fintech or insurtech selling software.
+- **no:** the main business is something else — services, consulting, agency, recruitment, events, retail, a bank or insurer, healthcare provision — even if it uses technology or is hiring for a tech role.
+- **unknown:** the posting doesn't describe what the company sells.
+"""

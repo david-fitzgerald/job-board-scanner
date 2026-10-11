@@ -50,3 +50,20 @@ def ashby_job(job_id, title, location="London", description=None, **extra):
             "jobUrl": f"https://jobs.ashbyhq.com/acme/{job_id}",
             "descriptionPlain": description if description is not None else f"{title} role. We sell software.",
             **extra}
+
+
+def model_reply(tags: dict, cost: float = 0.0005):
+    """An OpenRouter-shaped chat-completions response carrying `tags` as the message content."""
+    return 200, {"choices": [{"message": {"content": json.dumps(tags)}}], "usage": {"cost": cost}}
+
+
+def tags_quoting_the_posting(payload):
+    """A well-behaved model: founding yes quoting the title, location_eligible yes quoting the location."""
+    text = payload["messages"][0]["content"]
+    title = text.split("<title>", 1)[1].split("</title>", 1)[0]
+    location = text.split("<location>", 1)[1].split("</location>", 1)[0]
+    return {"founding": {"value": "yes", "quote": title},
+            "location_eligible": {"value": "yes", "quote": location},
+            "segment": {"value": [], "quote": None},
+            "language_required": {"value": "no", "quote": None},
+            "tech_company": {"value": "unknown", "quote": None}}

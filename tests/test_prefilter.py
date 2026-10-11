@@ -36,6 +36,13 @@ class PrefilterTest(unittest.TestCase):
                                  PROFILE))
         self.assertFalse(matches(posting("Account Executive", ""), PROFILE))
 
+    def test_punctuation_ended_term_matches_itself(self):
+        only = Profile(name="ae", titles=("Account Executive",), exclude_titles=(), locations=("Remote (UK)",),
+                       eligible_where="the UK", tags=("founding",))
+        self.assertTrue(matches(posting("Account Executive", "Remote (UK)"), only))
+        self.assertTrue(matches(posting("Account Executive", "London / remote (uk)"), only))
+        self.assertFalse(matches(posting("Account Executive", "Remote (UKI)"), only))
+
 
 if __name__ == "__main__":
     unittest.main()

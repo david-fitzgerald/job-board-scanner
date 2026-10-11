@@ -7,13 +7,14 @@ from unittest import mock
 from jobscan import digest
 from jobscan.fetch import Posting
 from jobscan.store import StoredPosting
+from jobscan.tag import TagResult
 
 
-def entry(job_id="1", title="Founding Account Executive"):
+def entry(job_id="1", title="Founding Account Executive", tags=None):
     p = Posting(key=f"ashby:acme:{job_id}", board="acme", company="Acme AI", title=title, location="London",
                 url=f"https://jobs.ashbyhq.com/acme/{job_id}", description="")
     return digest.DigestEntry(posting=StoredPosting(posting=p, input_hash="h",
-                                                    first_seen="2026-10-12T08:00:00.000000+00:00"))
+                                                    first_seen="2026-10-12T08:00:00.000000+00:00"), tags=tags or {})
 
 
 class RenderTest(unittest.TestCase):
@@ -22,6 +23,24 @@ class RenderTest(unittest.TestCase):
         self.assertEqual(text, "# david-ae — 2026-10-12 · 1 new\n\n"
                                "## Acme AI — Founding Account Executive · London\n"
                                "https://jobs.ashbyhq.com/acme/1 · Ashby · first seen 2026-10-12\n")
+
+    def test_tag_lines(self):
+        tags = {
+            "founding": TagResult(value="yes", quote="our first sales hire", verified=True, warn=False),
+            "segment": TagResult(value=("mid_market", "enterprise"), quote="mid-market and enterprise",
+                                 verified=False, warn=True),
+            "location_eligible": TagResult(value="yes", quote=None, verified=False, warn=True),
+            "language_required": TagResult(value="no", quote=None, verified=False, warn=False),
+            "tech_company": TagResult(value=(), quote=None, verified=False, warn=False),
+        }
+        lines = digest.render("ae", "2026-10-12", [entry(tags=tags)], carried_over=0).splitlines()[4:]
+        self.assertEqual(lines, [
+            '- founding: **yes** — "our first sales hire"',
+            '- segment: **mid_market, enterprise** — "mid-market and enterprise" ⚠ quote not in posting',
+            "- location_eligible: **yes** ⚠ no quote",
+            "- language_required: no",
+            "- tech_company: unknown",
+        ])
 
     def test_header_counts_carry_over(self):
         text = digest.render("david-ae", "2026-10-12", [], carried_over=3)

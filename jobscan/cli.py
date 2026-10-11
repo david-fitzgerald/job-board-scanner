@@ -3,10 +3,9 @@ import argparse
 import fcntl
 import logging
 import sys
-from datetime import date, datetime, timezone
 from pathlib import Path
 
-from jobscan import digest, fetch, prefilter, store
+from jobscan import scan, tag
 from jobscan.config import ConfigError, jobscan_home, load_config, load_profile
 
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE = 0, 1, 2
@@ -22,57 +21,25 @@ def main(argv: list[str] | None = None) -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="fetch → filter → tag → write the profile's digest")
     try:
-        args = parser.parse_args(argv)
+        parser.parse_args(argv)
     except SystemExit as e:
         return EXIT_OK if e.code == 0 else EXIT_USAGE
     home = jobscan_home()
     try:
         config = load_config(home)
         profile = load_profile(home)
+        defs = tag.definitions(profile.tags, profile.eligible_where)
         _setup_logging(home)
         with _run_lock(home):
-            return _run(config, profile)
+            outcome = scan.scan(config, profile, defs)
     except ConfigError as e:
         print(f"jobscan: {e}", file=sys.stderr)
         return EXIT_USAGE
     except RunLocked:
         print(f"jobscan: another run is using {home}", file=sys.stderr)
         return EXIT_USAGE
-
-
-def _run(config, profile) -> int:
-    started = _now()
-    boards, skipped = fetch.load_boards(config.boards_file)
-    log.info("fetch_start boards=%d skipped_not_ashby=%d", len(boards), skipped)
-    fetched, failed = fetch.fetch_all(boards)
-    conn = store.open_db(config.home)
-    for result in fetched:
-        store.apply_fetch(conn, result.board.slug, result.postings, started)
-    for failure in failed:
-        log.warning("board_failed company=%r slug=%s reason=%r", failure.board.company, failure.board.slug,
-                    failure.reason)
-    log.info("fetch_done boards_read=%d boards_failed=%d postings=%d", len(fetched), len(failed),
-             sum(len(r.postings) for r in fetched))
-    matched = [p for p in store.pending(conn, profile.name) if prefilter.matches(p.posting, profile)]
-    entries = [digest.DigestEntry(posting=p) for p in matched]
-    exit_code, path = EXIT_OK, None
-    if entries:
-        today = date.today().isoformat()
-        text = digest.render(profile.name, today, entries, carried_over=0)
-        try:
-            path = digest.publish(config.home / "digests" / profile.name, today, text)
-        except OSError as e:
-            log.error("digest_write_failed profile=%s error=%r", profile.name, str(e))
-            exit_code = EXIT_INCOMPLETE
-        else:
-            store.deliver(conn, profile.name, [e.posting.posting.key for e in entries], path)
-    delivered = len(entries) if path else 0
-    log.info("digest profile=%s new=%d path=%s", profile.name, delivered, path or "-")
-    print(f"{profile.name}\t{delivered}\t{path or '-'}")
-    store.record_run(conn, store.RunRecord(started=started, finished=_now(), boards_read=len(fetched),
-                                           boards_failed=len(failed), new=delivered, tagged=0, carried_over=0,
-                                           cost=0.0))
-    return exit_code
+    print(f"{outcome.profile}\t{outcome.new}\t{outcome.digest_path or '-'}")
+    return EXIT_OK if outcome.complete else EXIT_INCOMPLETE
 
 
 def _setup_logging(home: Path) -> None:
@@ -103,8 +70,3 @@ class _run_lock:
 
     def __exit__(self, *exc):
         self.file.close()
-
-
-def _now() -> str:
-    # Fixed-width microsecond timestamps compare correctly as strings; store.apply_fetch relies on that.
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")

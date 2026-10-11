@@ -1,10 +1,12 @@
 """All persistent state: one SQLite file under $JOBSCAN_HOME. Only the main thread writes."""
 import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
 from jobscan.fetch import Posting
+from jobscan.tag import TagDef, TagResult
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS postings (
@@ -13,6 +15,11 @@ CREATE TABLE IF NOT EXISTS postings (
     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS postings_board ON postings (board);
+CREATE TABLE IF NOT EXISTS tag_results (
+    posting_key TEXT NOT NULL, input_hash TEXT NOT NULL, def_hash TEXT NOT NULL, model_id TEXT NOT NULL,
+    value TEXT NOT NULL, quote TEXT, verified INTEGER NOT NULL, warn INTEGER NOT NULL,
+    PRIMARY KEY (posting_key, input_hash, def_hash, model_id)
+);
 CREATE TABLE IF NOT EXISTS deliveries (
     profile TEXT NOT NULL, posting_key TEXT NOT NULL, digest_path TEXT NOT NULL, PRIMARY KEY (profile, posting_key)
 );
@@ -86,6 +93,36 @@ def pending(conn: sqlite3.Connection, profile: str) -> list[StoredPosting]:
         input_hash=r["input_hash"],
         first_seen=r["first_seen"],
     ) for r in rows]
+
+
+def cached_results(conn: sqlite3.Connection, stored: StoredPosting, defs: list[TagDef], model_id: str,
+                   ) -> dict[str, TagResult]:
+    """Tag results still valid for this posting text, definition and model, by tag name."""
+    by_hash = {d.hash: d for d in defs}
+    rows = conn.execute(
+        f"""SELECT def_hash, value, quote, verified, warn FROM tag_results
+            WHERE posting_key = ? AND input_hash = ? AND model_id = ? AND def_hash IN ({",".join("?" * len(defs))})""",
+        (stored.posting.key, stored.input_hash, model_id, *by_hash),
+    )
+    results = {}
+    for r in rows:
+        d = by_hash[r["def_hash"]]
+        value = json.loads(r["value"])
+        results[d.name] = TagResult(value=tuple(value) if d.multi else value, quote=r["quote"],
+                                    verified=bool(r["verified"]), warn=bool(r["warn"]))
+    return results
+
+
+def save_results(conn: sqlite3.Connection, stored: StoredPosting, defs: list[TagDef], model_id: str,
+                 results: dict[str, TagResult]) -> None:
+    with conn:
+        conn.executemany(
+            """INSERT OR REPLACE INTO tag_results
+               (posting_key, input_hash, def_hash, model_id, value, quote, verified, warn)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            [(stored.posting.key, stored.input_hash, d.hash, model_id, json.dumps(results[d.name].value),
+              results[d.name].quote, results[d.name].verified, results[d.name].warn) for d in defs],
+        )
 
 
 def deliver(conn: sqlite3.Connection, profile: str, posting_keys: list[str], digest_path: Path) -> None:
