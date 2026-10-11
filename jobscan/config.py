@@ -62,7 +62,7 @@ def load_config(home: Path) -> Config:
     )
     try:
         url = urlparse(model_config.base_url)
-        url.port  # raises on a malformed port
+        url.port  # noqa: B018 -- raises on a malformed port
     except ValueError:
         url = None
     if url is None or url.scheme not in ("http", "https") or not url.hostname or url.query or url.fragment \

@@ -1,0 +1,14 @@
+[project]
+name = "jobscan"
+version = "0.1.0"
+description = "Self-hosted job-board scanner for tech jobs: Ashby boards, title and location filter, LLM tags with verified quotes, markdown digest"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+extend-exclude = ["spikes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "C4", "PLW", "RUF"]

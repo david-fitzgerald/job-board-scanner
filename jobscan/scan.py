@@ -2,7 +2,7 @@
 import logging
 import sqlite3
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from pathlib import Path
 
 from jobscan import digest, fetch, prefilter, store, tag
@@ -104,4 +104,4 @@ def _digest(conn: sqlite3.Connection, config: Config, profile: Profile, entries:
 
 
 def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="microseconds")
+    return datetime.now(UTC).isoformat(timespec="microseconds")

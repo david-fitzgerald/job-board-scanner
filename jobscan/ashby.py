@@ -19,7 +19,7 @@ def board(company: str, board_url: str) -> Board | None:
     None when the URL isn't recognisably Ashby's."""
     try:
         parsed = urlparse(board_url)
-        parsed.port  # raises on a malformed port
+        parsed.port  # noqa: B018 -- raises on a malformed port
     except ValueError:
         return None
     if parsed.scheme not in ("http", "https") or not parsed.hostname:
@@ -89,5 +89,5 @@ def _description(plain: str | None, rich: str | None) -> str:
     if plain and plain.strip():
         return plain.strip()
     text = html.unescape(ANY_TAG.sub("", BLOCK_TAG.sub("\n", rich or "")))
-    lines = (re.sub(r"[ \t ]+", " ", line).strip() for line in text.splitlines())
+    lines = (re.sub(r"[ \t\u00a0]+", " ", line).strip() for line in text.splitlines())
     return "\n".join(line for line in lines if line)

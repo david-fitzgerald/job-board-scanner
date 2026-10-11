@@ -7,8 +7,9 @@ from jobscan.records import Posting
 
 
 def posting(job_id, board="acme", title="Account Executive"):
-    return Posting(key=f"ashby:{board}:{job_id}", ats="ashby", board=f"ashby:{board}", company=board.title(), title=title,
-                   location="London", url=f"https://jobs.ashbyhq.com/{board}/{job_id}", description="Sell software.")
+    return Posting(key=f"ashby:{board}:{job_id}", ats="ashby", board=f"ashby:{board}", company=board.title(),
+                   title=title, location="London", url=f"https://jobs.ashbyhq.com/{board}/{job_id}",
+                   description="Sell software.")
 
 
 class ApplyFetchTest(unittest.TestCase):

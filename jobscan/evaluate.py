@@ -1,7 +1,7 @@
 """`jobscan eval`: score the production tagging path against a labelled posting set, as G2 scored the spike."""
 import json
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 from jobscan import tag
@@ -90,7 +90,7 @@ def run_eval(items: list[LabelledPosting], config: Config) -> EvalReport:
 
 
 def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.TagResult]],
-          usage: tag.Usage = tag.Usage(), unreasoned: int = 0) -> EvalReport:
+          usage: tag.Usage = tag.Usage(), unreasoned: int = 0) -> EvalReport:  # noqa: B008 -- Usage is frozen
     scores = [_score_tag(name, is_minority, items, predictions) for name, is_minority in MINORITY.items()]
     quotes = [r for results in predictions.values() for r in results.values() if r.quote is not None]
     quote_rate = sum(r.verified for r in quotes) / len(quotes) if quotes else None
@@ -102,8 +102,8 @@ def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.Tag
 def _score_tag(name, is_minority, items, predictions) -> TagScore:
     pairs = [(i.labels[name].lower(), _predicted(predictions.get(i.id), name)) for i in items if name in i.labels]
     right = [_same(name, truth, pred) for truth, pred in pairs]
-    minority = [ok for (truth, _), ok in zip(pairs, right) if is_minority(truth)]
-    flagged = [ok for (_, pred), ok in zip(pairs, right) if pred is not None and is_minority(pred)]
+    minority = [ok for (truth, _), ok in zip(pairs, right, strict=True) if is_minority(truth)]
+    flagged = [ok for (_, pred), ok in zip(pairs, right, strict=True) if pred is not None and is_minority(pred)]
     accuracy = sum(right) / len(pairs) if pairs else 0.0
     recall = sum(minority) / len(minority) if minority else None
     return TagScore(tag=name, labelled=len(pairs), predicted=sum(p is not None for _, p in pairs), accuracy=accuracy,
@@ -128,14 +128,16 @@ def _same(name: str, truth: str, pred: str | None) -> bool:
 def _save(home: Path, items: list[LabelledPosting], attempts: dict[str, tag.TagAttempt]) -> None:
     directory = home / "eval"
     directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S.%fZ")
     with (directory / f"{stamp}.jsonl").open("x") as f:
         for item in items:
             attempt = attempts.get(item.id)
             row = {"id": item.id, "labels": item.labels,
-                   "error": attempt.error if isinstance(attempt, tag.TagFailure) else None if attempt else "not started",
+                   "error": (attempt.error if isinstance(attempt, tag.TagFailure) else None) if attempt
+                   else "not started",
                    "usage": asdict(attempt.usage) if attempt else None,
-                   "accepted_reasoning_tokens": attempt.reasoning_tokens if isinstance(attempt, tag.TagSuccess) else None,
+                   "accepted_reasoning_tokens":
+                       attempt.reasoning_tokens if isinstance(attempt, tag.TagSuccess) else None,
                    "tags": {k: asdict(v) for k, v in attempt.results.items()}
                    if isinstance(attempt, tag.TagSuccess) else None}
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

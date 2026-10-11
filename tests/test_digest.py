@@ -11,8 +11,8 @@ from jobscan.tag import TagResult
 
 
 def entry(job_id="1", title="Founding Account Executive", tags=None):
-    p = Posting(key=f"ashby:acme:{job_id}", ats="ashby", board="ashby:acme", company="Acme AI", title=title, location="London",
-                url=f"https://jobs.ashbyhq.com/acme/{job_id}", description="")
+    p = Posting(key=f"ashby:acme:{job_id}", ats="ashby", board="ashby:acme", company="Acme AI", title=title,
+                location="London", url=f"https://jobs.ashbyhq.com/acme/{job_id}", description="")
     return digest.DigestEntry(posting=StoredPosting(posting=p, input_hash="h",
                                                     first_seen="2026-10-12T08:00:00.000000+00:00"), tags=tags or {})
 

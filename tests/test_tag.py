@@ -11,9 +11,9 @@ from tests.fakes import FakeServer, model_reply
 
 ALL = ("founding", "location_eligible", "segment", "language_required", "tech_company")
 DEFS = tag.definitions(ALL, "the UK")
-POSTING = Posting(key="ashby:acme:1", ats="ashby", board="ashby:acme", company="Acme", title="Founding Account Executive",
-                  location="London", url="https://jobs.ashbyhq.com/acme/1",
-                  description="You’ll be our first sales hire —  selling to mid-market teams.")
+POSTING = Posting(key="ashby:acme:1", ats="ashby", board="ashby:acme", company="Acme",
+                  title="Founding Account Executive", location="London", url="https://jobs.ashbyhq.com/acme/1",
+                  description="You\u2019ll be our first\u00a0sales hire \u2014  selling to mid-market teams.")
 
 
 def reply(**cells):
@@ -155,7 +155,7 @@ class TagPostingTest(unittest.TestCase):
         for cost, reasoning in [(float("nan"), True), (True, -3), (-0.5, 1.5), ("0.001", None)]:
             status, body = model_reply(json.loads(reply()))
             body["usage"] = {"cost": cost, "completion_tokens_details": {"reasoning_tokens": reasoning}}
-            self.server.routes["/chat/completions"] = (200, lambda payload, body=body: (status, body))
+            self.server.routes["/chat/completions"] = (200, lambda payload, status=status, body=body: (status, body))
             usage = tag.tag_posting(POSTING, DEFS, self.model, None).usage
             self.assertEqual((usage.cost, usage.cost_reported, usage.reasoning_tokens), (0.0, False, 0), cost)
 

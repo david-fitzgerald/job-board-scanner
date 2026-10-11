@@ -132,7 +132,7 @@ Quote text from inside the tags, never the tags themselves.
 <location>{location}</location>
 <description>
 {description}
-</description>"""
+</description>"""  # noqa: E501 -- the model reads these lines as written; wrapping changes the evaluated prompt
 
 
 def prompt(posting: Posting, defs: list[TagDef]) -> str:
@@ -291,8 +291,8 @@ def _needs_quote(d: TagDef, value) -> bool:
     return value not in (UNKNOWN, (), d.default)
 
 
-PUNCT = str.maketrans({"‘": "'", "’": "'", "“": '"', "”": '"', "‐": "-", "‑": "-",
-                       "–": "-", "—": "-", " ": " "})
+PUNCT = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                       "\u2010": "-", "\u2011": "-", "\u2013": "-", "\u2014": "-", "\u00a0": " "})
 
 
 def _normalise(text: str) -> str:

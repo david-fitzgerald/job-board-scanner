@@ -1,8 +1,8 @@
 import unittest
 
 from jobscan.config import Profile
-from jobscan.records import Posting
 from jobscan.prefilter import matches
+from jobscan.records import Posting
 
 PROFILE = Profile(
     name="ae", titles=("Account Executive", "Founding Sales"), exclude_titles=("Sales Development", "Junior", "intern"),
