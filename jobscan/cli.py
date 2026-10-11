@@ -3,10 +3,10 @@ import argparse
 import fcntl
 import logging
 import sys
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
-from jobscan import fetch, store
+from jobscan import digest, fetch, prefilter, store
 from jobscan.config import ConfigError, jobscan_home, load_config, load_profile
 
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE = 0, 1, 2
@@ -53,9 +53,26 @@ def _run(config, profile) -> int:
                     failure.reason)
     log.info("fetch_done boards_read=%d boards_failed=%d postings=%d", len(fetched), len(failed),
              sum(len(r.postings) for r in fetched))
+    matched = [p for p in store.pending(conn, profile.name) if prefilter.matches(p.posting, profile)]
+    entries = [digest.DigestEntry(posting=p) for p in matched]
+    exit_code, path = EXIT_OK, None
+    if entries:
+        today = date.today().isoformat()
+        text = digest.render(profile.name, today, entries, carried_over=0)
+        try:
+            path = digest.publish(config.home / "digests" / profile.name, today, text)
+        except OSError as e:
+            log.error("digest_write_failed profile=%s error=%r", profile.name, str(e))
+            exit_code = EXIT_INCOMPLETE
+        else:
+            store.deliver(conn, profile.name, [e.posting.posting.key for e in entries], path)
+    delivered = len(entries) if path else 0
+    log.info("digest profile=%s new=%d path=%s", profile.name, delivered, path or "-")
+    print(f"{profile.name}\t{delivered}\t{path or '-'}")
     store.record_run(conn, store.RunRecord(started=started, finished=_now(), boards_read=len(fetched),
-                                           boards_failed=len(failed), new=0, tagged=0, carried_over=0, cost=0.0))
-    return EXIT_OK
+                                           boards_failed=len(failed), new=delivered, tagged=0, carried_over=0,
+                                           cost=0.0))
+    return exit_code
 
 
 def _setup_logging(home: Path) -> None:

@@ -1,0 +1,21 @@
+"""Profile filter: title and location text, before any model call."""
+import re
+
+from jobscan.config import Profile
+from jobscan.fetch import Posting
+
+
+def matches(posting: Posting, profile: Profile) -> bool:
+    return (_any_term(profile.titles, posting.title)
+            and not _any_term(profile.exclude_titles, posting.title)
+            and _any_term(profile.locations, posting.location))
+
+
+def _any_term(terms: tuple[str, ...], text: str) -> bool:
+    return any(_term_pattern(term).search(text) for term in terms)
+
+
+def _term_pattern(term: str) -> re.Pattern:
+    # Word-adjacent, not \b: "Remote (UK)" must match itself, "UK" must not hit "Ukraine",
+    # and "intern" must not hit "International".
+    return re.compile(rf"(?<!\w){re.escape(term.strip())}(?!\w)", re.IGNORECASE)

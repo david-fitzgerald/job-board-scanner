@@ -13,11 +13,21 @@ CREATE TABLE IF NOT EXISTS postings (
     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS postings_board ON postings (board);
+CREATE TABLE IF NOT EXISTS deliveries (
+    profile TEXT NOT NULL, posting_key TEXT NOT NULL, digest_path TEXT NOT NULL, PRIMARY KEY (profile, posting_key)
+);
 CREATE TABLE IF NOT EXISTS runs (
     started TEXT NOT NULL, finished TEXT NOT NULL, boards_read INTEGER NOT NULL, boards_failed INTEGER NOT NULL,
     new INTEGER NOT NULL, tagged INTEGER NOT NULL, carried_over INTEGER NOT NULL, cost REAL NOT NULL
 );
 """
+
+
+@dataclass(frozen=True)
+class StoredPosting:
+    posting: Posting
+    input_hash: str
+    first_seen: str
 
 
 @dataclass(frozen=True)
@@ -60,6 +70,29 @@ def apply_fetch(conn: sqlite3.Connection, board: str, postings: tuple[Posting, .
         )
         # Every posting the board still lists now carries last_seen = now.
         conn.execute("UPDATE postings SET closed = 1 WHERE board = ? AND last_seen < ?", (board, now))
+
+
+def pending(conn: sqlite3.Connection, profile: str) -> list[StoredPosting]:
+    """Open postings never delivered to this profile, oldest first."""
+    rows = conn.execute(
+        """SELECT * FROM postings
+           WHERE closed = 0 AND key NOT IN (SELECT posting_key FROM deliveries WHERE profile = ?)
+           ORDER BY first_seen, key""",
+        (profile,),
+    )
+    return [StoredPosting(
+        posting=Posting(key=r["key"], board=r["board"], company=r["company"], title=r["title"],
+                        location=r["location"], url=r["url"], description=r["description"]),
+        input_hash=r["input_hash"],
+        first_seen=r["first_seen"],
+    ) for r in rows]
+
+
+def deliver(conn: sqlite3.Connection, profile: str, posting_keys: list[str], digest_path: Path) -> None:
+    """Record that these postings are in a published digest. Call only after the digest file exists."""
+    with conn:
+        conn.executemany("INSERT INTO deliveries (profile, posting_key, digest_path) VALUES (?, ?, ?)",
+                         [(profile, key, str(digest_path)) for key in posting_keys])
 
 
 def record_run(conn: sqlite3.Connection, run: RunRecord) -> None:
