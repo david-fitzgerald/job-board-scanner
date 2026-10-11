@@ -1,5 +1,7 @@
-"""A local HTTP server standing in for Ashby and the model endpoint in tests."""
+"""Local HTTP servers standing in for Ashby, the model endpoint and Common Crawl's index files in tests."""
+import gzip
 import json
+import re
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -47,6 +49,87 @@ class FakeServer:
     def close(self):
         self.httpd.shutdown()
         self.httpd.server_close()
+
+
+class FakeFiles:
+    """Serves `files[path]` = bytes with HEAD and single-range GET (206), like data.commoncrawl.org. `fail[path]`
+    is a list of statuses answered (and consumed) before the file; `ignore_range` answers 200 with the whole file.
+    Every request is recorded in `requests` as (method, path, Range header)."""
+
+    def __init__(self):
+        self.files, self.fail, self.ignore_range, self.requests = {}, {}, False, []
+        server = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_HEAD(self):
+                self._answer(head=True)
+
+            def do_GET(self):
+                self._answer(head=False)
+
+            def _answer(self, head):
+                server.requests.append((self.command, self.path, self.headers.get("Range")))
+                pending = server.fail.get(self.path)
+                if pending:
+                    self._send(pending.pop(0), b"", {})
+                    return
+                body = server.files.get(self.path)
+                if body is None:
+                    self._send(404, b"", {})
+                    return
+                wanted = re.fullmatch(r"bytes=(\d+)-(\d+)", self.headers.get("Range") or "")
+                if head or not wanted or server.ignore_range:
+                    self._send(200, b"" if head else body, {"Content-Length": str(len(body))}, head=head)
+                    return
+                start, end = int(wanted[1]), min(int(wanted[2]), len(body) - 1)
+                self._send(206, body[start:end + 1], {"Content-Range": f"bytes {start}-{end}/{len(body)}"})
+
+            def _send(self, status, body, headers, head=False):
+                self.send_response(status)
+                for name, value in headers.items():
+                    self.send_header(name, value)
+                if "Content-Length" not in headers:
+                    self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if not head:
+                    self.wfile.write(body)
+
+            def log_message(self, *args):
+                pass
+
+        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.httpd.server_address[1]}/"
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.httpd.shutdown()
+        self.httpd.server_close()
+
+
+def cdx_line(url, status="200", mime="text/html", timestamp="20260901000000"):
+    """A CDX line for `url` (scheme://host/path) as Common Crawl writes it: SURT key, timestamp, JSON."""
+    host, _, path = url.split("://", 1)[1].partition("/")
+    surt = ",".join(reversed(host.split("."))) + ")/" + path.lower()
+    return f"{surt} {timestamp} " + json.dumps({"url": url, "mime": mime, "status": status})
+
+
+def crawl_files(crawl, lines, per_block=2):
+    """The index files of one crawl holding `lines` (sorted here), `per_block` CDX lines per gzip member, as
+    {path: bytes} for FakeFiles: cluster.idx and cdx-00000.gz."""
+    lines = sorted(lines)
+    cdx, index = b"", []
+    for n, start in enumerate(range(0, len(lines), per_block)):
+        block = gzip.compress("".join(line + "\n" for line in lines[start:start + per_block]).encode())
+        key = lines[start].rsplit(" {", 1)[0]
+        index.append(f"{key}\tcdx-00000.gz\t{len(cdx)}\t{len(block)}\t{n + 1}\n")
+        cdx += block
+    base = f"/cc-index/collections/{crawl}/indexes/"
+    return {base + "cluster.idx": "".join(index).encode(), base + "cdx-00000.gz": cdx}
+
+
+def crawl_list(*crawls):
+    rows = "".join(f'<tr><td><a href="/crawl-data/{c}/index.html">{c}</a></td></tr>\n' for c in crawls)
+    return {"/cc-index/collections/index.html": f"<table>{rows}</table>".encode()}
 
 
 def ashby_job(job_id, title, location="London", description=None, **extra):

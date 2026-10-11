@@ -1,0 +1,177 @@
+"""Common Crawl index reader: the newest crawls, and the URLs a crawl captured on one host, read straight from the
+published index files by HTTP range requests (the CC index server is not used).
+
+A crawl's `cluster.idx` is sorted by SURT key, one line per block of CDX lines: the key of the block's first line
+and the gzip member holding the block (file, offset, length). One host's captures are a contiguous key range, so
+a binary search over `cluster.idx` finds them; the block before the first entry inside the range is read too,
+because it can start before the range and run into it. Any response or record that isn't what the format promises
+raises `CrawlError`: a crawl reads completely or not at all."""
+import gzip
+import http.client
+import json
+import re
+import time
+import urllib.error
+import urllib.request
+import zlib
+
+BASE = "https://data.commoncrawl.org/"
+CRAWL_ID = re.compile(r"\bCC-MAIN-\d{4}-\d{2}\b")
+WINDOW = 65536  # bytes per cluster.idx read; far longer than one index line
+MAX_BLOCK = 8 << 20  # a CDX block is ~250 KB compressed
+MAX_PAGE = 4 << 20
+TIMEOUT = 60
+RETRY_PAUSES = (5, 20, 60)  # Common Crawl asks clients to back off on 503
+RETRYABLE = {429, 500, 502, 503, 504}
+HEADERS = {"User-Agent": "jobscan (+https://github.com/david-fitzgerald/jobscan)"}
+CONTENT_RANGE = re.compile(r"bytes (\d+)-(\d+)/(\d+)")
+
+
+class CrawlError(Exception):
+    """A crawl's index couldn't be read completely."""
+
+
+def latest_crawls(n: int, base: str = BASE) -> list[str]:
+    """The n newest crawl ids that have index files."""
+    page = _get(base + "cc-index/collections/index.html", limit=MAX_PAGE).decode("utf-8", "replace")
+    crawls = sorted(set(CRAWL_ID.findall(page)), reverse=True)
+    if len(crawls) < n:
+        raise CrawlError(f"crawl list names {len(crawls)} crawls, need {n}")
+    return crawls[:n]
+
+
+def captures(crawl: str, host: str, base: str = BASE) -> list[str]:
+    """URLs on `host` that `crawl` fetched with status 200 as text/html."""
+    prefix = surt_prefix(host).encode()
+    indexes = f"{base}cc-index/collections/{crawl}/indexes/"
+    urls = []
+    for block in _blocks(indexes + "cluster.idx", prefix):
+        urls += _block_urls(indexes, block, prefix)
+    if not urls:
+        raise CrawlError(f"{crawl}: no captures of {host}")
+    return urls
+
+
+def surt_prefix(host: str) -> str:
+    return ",".join(reversed(host.lower().split("."))) + ")/"
+
+
+def _blocks(index_url: str, prefix: bytes) -> list[tuple[str, int, int]]:
+    size = _size(index_url)
+    lo, hi = 0, size  # the first whole line after lo sorts below prefix (or lo is 0); after hi, not below
+    while hi - lo > WINDOW:
+        mid = (lo + hi) // 2
+        key = _first_key_after(index_url, mid, size)
+        if key is not None and key < prefix:
+            lo = mid
+        else:
+            hi = mid
+    blocks, before = [], None
+    for key, block in _entries_from(index_url, lo, size):
+        if key < prefix:
+            before = block
+            continue
+        if before:
+            blocks.append(before)
+            before = None
+        if not key.startswith(prefix):
+            return blocks
+        blocks.append(block)
+    return blocks + ([before] if before else [])
+
+
+def _first_key_after(index_url: str, pos: int, size: int) -> bytes | None:
+    data = _range(index_url, pos, min(pos + WINDOW, size) - 1)
+    lines = data.split(b"\n")
+    whole = lines[1:-1] if pos else lines[:-1]
+    return _parse_entry(whole[0])[0] if whole else None
+
+
+def _entries_from(index_url: str, pos: int, size: int):
+    """(key, block) for every whole index line starting after pos (from pos itself when pos is 0)."""
+    carry, skip_partial = b"", pos > 0
+    while pos < size:
+        end = min(pos + WINDOW, size)
+        lines = (carry + _range(index_url, pos, end - 1)).split(b"\n")
+        carry, pos = lines.pop(), end
+        if skip_partial:
+            lines, skip_partial = lines[1:], False
+        for line in lines:
+            yield _parse_entry(line)
+    if carry:
+        yield _parse_entry(carry)
+
+
+def _parse_entry(line: bytes) -> tuple[bytes, tuple[str, int, int]]:
+    try:
+        key_and_time, name, offset, length, _ = line.decode().split("\t")
+        block = (name, int(offset), int(length))
+    except ValueError:
+        raise CrawlError(f"malformed cluster.idx line {line[:80]!r}") from None
+    if not block[0].endswith(".gz") or "/" in block[0] or block[1] < 0 or not 0 < block[2] <= MAX_BLOCK:
+        raise CrawlError(f"malformed cluster.idx line {line[:80]!r}")
+    return key_and_time.split(" ", 1)[0].encode(), block
+
+
+def _block_urls(indexes: str, block: tuple[str, int, int], prefix: bytes) -> list[str]:
+    name, offset, length = block
+    try:
+        text = gzip.decompress(_range(indexes + name, offset, offset + length - 1))
+    except (OSError, EOFError, zlib.error) as e:
+        raise CrawlError(f"{name}@{offset}: corrupt block ({type(e).__name__})") from None
+    urls = []
+    for line in text.split(b"\n"):
+        if not line.startswith(prefix):
+            continue
+        try:
+            record = json.loads(line.split(b" ", 2)[2])
+        except (IndexError, ValueError, RecursionError):
+            raise CrawlError(f"{name}@{offset}: malformed CDX line {line[:80]!r}") from None
+        if not isinstance(record, dict) or not isinstance(record.get("url"), str):
+            raise CrawlError(f"{name}@{offset}: CDX record without a url")
+        if record.get("status") == "200" and record.get("mime") == "text/html":
+            urls.append(record["url"])
+    return urls
+
+
+def _size(url: str) -> int:
+    response_headers = _request(url, method="HEAD")[1]
+    try:
+        return int(response_headers["Content-Length"])
+    except (TypeError, ValueError):
+        raise CrawlError(f"{url}: no Content-Length") from None
+
+
+def _range(url: str, start: int, end: int) -> bytes:
+    body, response_headers, status = _request(url, headers={"Range": f"bytes={start}-{end}"}, limit=end - start + 1)
+    match = CONTENT_RANGE.fullmatch(response_headers.get("Content-Range") or "")
+    if status != 206 or not match or (int(match[1]), int(match[2])) != (start, end) or len(body) != end - start + 1:
+        raise CrawlError(f"{url}: range {start}-{end} answered {status} with {len(body)} bytes")
+    return body
+
+
+def _get(url: str, limit: int) -> bytes:
+    body, _, status = _request(url, limit=limit)
+    if status != 200:
+        raise CrawlError(f"{url}: HTTP {status}")
+    return body
+
+
+def _request(url: str, method: str = "GET", headers: dict | None = None, limit: int = 0):
+    """(body, headers, status), retrying 429/5xx and network errors. A body longer than `limit` is an error."""
+    request = urllib.request.Request(url, headers=HEADERS | (headers or {}), method=method)
+    for pause in (*RETRY_PAUSES, None):
+        try:
+            with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
+                body = response.read(limit + 1) if method != "HEAD" else b""
+                if len(body) > limit:
+                    raise CrawlError(f"{url}: response longer than {limit} bytes")
+                return body, response.headers, response.status
+        except urllib.error.HTTPError as e:
+            e.close()
+            if e.code not in RETRYABLE or pause is None:
+                raise CrawlError(f"{url}: HTTP {e.code}") from None
+        except (OSError, http.client.HTTPException) as e:
+            if pause is None:
+                raise CrawlError(f"{url}: network ({type(e).__name__})") from None
+        time.sleep(pause)
