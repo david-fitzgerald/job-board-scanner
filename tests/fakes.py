@@ -53,11 +53,12 @@ class FakeServer:
 
 class FakeFiles:
     """Serves `files[path]` = bytes with HEAD and single-range GET (206), like data.commoncrawl.org. `fail[path]`
-    is a list of statuses answered (and consumed) before the file; `ignore_range` answers 200 with the whole file.
+    is a list of statuses answered (and consumed) before the file; `ignore_range` answers 200 with the whole file;
+    `content_range(start, end, size)` builds the Content-Range header of every 206 instead.
     Every request is recorded in `requests` as (method, path, Range header)."""
 
     def __init__(self):
-        self.files, self.fail, self.ignore_range, self.requests = {}, {}, False, []
+        self.files, self.fail, self.ignore_range, self.content_range, self.requests = {}, {}, False, None, []
         server = self
 
         class Handler(BaseHTTPRequestHandler):
@@ -82,7 +83,8 @@ class FakeFiles:
                     self._send(200, b"" if head else body, {"Content-Length": str(len(body))}, head=head)
                     return
                 start, end = int(wanted[1]), min(int(wanted[2]), len(body) - 1)
-                self._send(206, body[start:end + 1], {"Content-Range": f"bytes {start}-{end}/{len(body)}"})
+                header = (server.content_range or (lambda s, e, n: f"bytes {s}-{e}/{n}"))(start, end, len(body))
+                self._send(206, body[start:end + 1], {"Content-Range": header})
 
             def _send(self, status, body, headers, head=False):
                 self.send_response(status)

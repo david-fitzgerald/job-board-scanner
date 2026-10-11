@@ -123,6 +123,16 @@ class MigrationTest(unittest.TestCase):
         self.assertEqual(conn.execute("PRAGMA user_version").fetchone()[0], 0)
 
 
+class NewerSchemaTest(unittest.TestCase):
+    def test_database_from_a_newer_jobscan_is_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            conn = sqlite3.connect(Path(d) / "jobscan.sqlite")
+            conn.execute(f"PRAGMA user_version = {store.SCHEMA_VERSION + 1}")
+            conn.close()
+            with self.assertRaisesRegex(ConfigError, "newer"):
+                store.open_db(Path(d))
+
+
 class BoardsTest(unittest.TestCase):
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()

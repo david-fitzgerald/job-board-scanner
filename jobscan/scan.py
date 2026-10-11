@@ -29,12 +29,13 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
     started = _now()
     conn = store.open_db(config.home)
     try:
-        boards_read, boards_failed, eligible = _fetch(conn, config, started)
-        matched = [p for p in store.pending(conn, profile.name, eligible) if prefilter.matches(p.posting, profile)]
+        fetched = _fetch(conn, config, started)
+        matched = [p for p in store.pending(conn, profile.name, fetched.eligible)
+                   if prefilter.matches(p.posting, profile)]
         entries, tagged, usage = _tag(conn, matched, defs, config)
         outcome = _digest(conn, config, profile, entries, carried_over=len(matched) - len(entries))
         store.record_run(conn, store.RunRecord(
-            started=started, finished=_now(), boards_read=boards_read, boards_failed=boards_failed,
+            started=started, finished=_now(), boards_read=fetched.read, boards_failed=fetched.failed,
             new=outcome.new, tagged=tagged, carried_over=outcome.carried_over, cost=usage.cost,
             cost_complete=usage.cost_reported))
         return outcome
@@ -42,9 +43,15 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
         conn.close()
 
 
-def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int, set[str]]:
-    """Fetches and stores every board; returns boards read, boards failed, and the boards whose postings may be
-    delivered this run: those read, and those failing for a reason that may clear (not a 404: that board is gone)."""
+@dataclass(frozen=True)
+class FetchSummary:
+    read: int
+    failed: int
+    eligible: set[str]  # boards whose postings may be delivered: read, or failing for a reason that may clear
+
+
+def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> FetchSummary:
+    """Fetches and stores every board. A 404 isn't a reason that may clear: that board is gone."""
     read, not_found, transient, postings = [], [], [], 0
     for outcome in fetch.fetch_each(_boards(conn, config)):
         if isinstance(outcome, fetch.BoardFetch):
@@ -61,7 +68,7 @@ def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int
     store.record_board_outcomes(conn, read, not_found)
     log.info("fetch_done boards_read=%d boards_not_found=%d boards_failed=%d postings=%d", len(read),
              len(not_found), len(transient), postings)
-    return len(read), len(not_found) + len(transient), set(read) | set(transient)
+    return FetchSummary(read=len(read), failed=len(not_found) + len(transient), eligible=set(read) | set(transient))
 
 
 def _boards(conn: sqlite3.Connection, config: Config) -> list[Board]:

@@ -89,6 +89,16 @@ class CapturesTest(unittest.TestCase):
         with self.assertRaisesRegex(CrawlError, "answered 200"):
             self.captures()
 
+    def test_bad_content_range_is_an_error(self):
+        self.serve(lines_around(ashby_urls(2), 2, 2))
+        for name, header in [("total not past end", lambda s, e, n: f"bytes {s}-{e}/{e}"),
+                             ("huge number", lambda s, e, n: f"bytes {s}-{'9' * 5000}/{n}"),
+                             ("unsatisfied form", lambda s, e, n: f"bytes */{n}")]:
+            with self.subTest(name):
+                self.server.content_range = header
+                with self.assertRaisesRegex(CrawlError, "range"):
+                    self.captures()
+
     def test_block_past_end_of_file_is_an_error(self):
         self.serve(lines_around(ashby_urls(2), 0, 0))
         cdx = self.server.files[INDEXES + "cdx-00000.gz"]
@@ -109,6 +119,13 @@ class CapturesTest(unittest.TestCase):
         inside = next(i for i, line in enumerate(index) if line.startswith("com,ashbyhq,jobs)/acme002"))
         index[inside] = index[inside].replace("\tcdx-00000.gz\t", "\tcdx-00000.gz\tx", 1)
         self.server.files[INDEXES + "cluster.idx"] = "".join(index).encode()
+        with self.assertRaisesRegex(CrawlError, "malformed cluster.idx"):
+            self.captures()
+
+    def test_index_line_without_a_timestamp_is_an_error(self):
+        self.serve(lines_around(ashby_urls(2), 0, 0), per_block=1)
+        index = self.server.files[INDEXES + "cluster.idx"].decode()
+        self.server.files[INDEXES + "cluster.idx"] = index.replace(" 20260901000000\t", "\t", 1).encode()
         with self.assertRaisesRegex(CrawlError, "malformed cluster.idx"):
             self.captures()
 

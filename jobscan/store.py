@@ -71,6 +71,9 @@ def open_db(home: Path) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.executescript(SCHEMA)
         _migrate(conn)
+    except ConfigError:
+        conn.close()
+        raise
     except sqlite3.Error as e:
         conn.close()
         raise ConfigError(f"{path}: cannot open database ({type(e).__name__}: {e})") from None
@@ -80,7 +83,10 @@ def open_db(home: Path) -> sqlite3.Connection:
 def _migrate(conn: sqlite3.Connection) -> None:
     """Version 1: Ashby slugs are case-folded in board ids and posting keys (`ashby:Clerk:1` → `ashby:clerk:1`), so
     deliveries and cached tags follow their postings. One transaction; a key collision rolls it all back."""
-    if conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION:
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if version > SCHEMA_VERSION:
+        raise ConfigError(f"database schema {version} is newer than this jobscan's ({SCHEMA_VERSION}): update jobscan")
+    if version == SCHEMA_VERSION:
         return
     conn.create_function("fold_slug", 1, _fold_slug, deterministic=True)
     with conn:
