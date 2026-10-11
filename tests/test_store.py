@@ -58,9 +58,6 @@ class ApplyFetchTest(unittest.TestCase):
         self.assertNotEqual(store.input_hash(moved), store.input_hash(posting("1")))
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 T0 = "2026-10-11T10:00:00.000000+00:00"
 
@@ -131,6 +128,9 @@ class NewerSchemaTest(unittest.TestCase):
             conn.close()
             with self.assertRaisesRegex(ConfigError, "newer"):
                 store.open_db(Path(d))
+            conn = sqlite3.connect(Path(d) / "jobscan.sqlite")
+            self.addCleanup(conn.close)
+            self.assertEqual(conn.execute("SELECT count(*) FROM sqlite_master").fetchone()[0], 0)
 
 
 class BoardsTest(unittest.TestCase):
@@ -168,3 +168,7 @@ class BoardsTest(unittest.TestCase):
         rows = store.pending(self.conn, "david", {"ashby:beta"})
         self.assertNotIsInstance(rows, list)
         self.assertEqual([s.posting.key for s in rows], ["ashby:beta:1"])
+
+
+if __name__ == "__main__":
+    unittest.main()

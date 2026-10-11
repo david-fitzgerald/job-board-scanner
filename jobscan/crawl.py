@@ -28,6 +28,7 @@ RETRYABLE = {429, 500, 502, 503, 504}
 HEADERS = {"User-Agent": "jobscan (+https://github.com/david-fitzgerald/jobscan)"}
 CONTENT_RANGE = re.compile(r"bytes (\d{1,15})-(\d{1,15})/(\d{1,15})")
 # cluster.idx line: "<SURT key> <14-digit timestamp>\t<cdx file>\t<offset>\t<length>\t<sequence>"
+CDX_HEADER = re.compile(rb"\S+ \d{14} ")  # SURT key and timestamp before the JSON record
 INDEX_LINE = re.compile(r"(\S+) \d{14}\t(cdx-\d{5}\.gz)\t(\d{1,15})\t(\d{1,9})\t\d{1,9}")
 
 
@@ -41,6 +42,13 @@ class Block:
     file: str
     offset: int
     length: int
+
+
+@dataclass(frozen=True)
+class Response:
+    body: bytes
+    headers: http.client.HTTPMessage
+    status: int
 
 
 @dataclass(frozen=True)
@@ -121,7 +129,10 @@ def _entries_from(index_url: str, pos: int, size: int) -> Iterator[IndexEntry]:
 
 
 def _parse_entry(line: bytes) -> IndexEntry:
-    match = INDEX_LINE.fullmatch(line.decode("ascii", "replace"))
+    try:
+        match = INDEX_LINE.fullmatch(line.decode("ascii"))
+    except UnicodeDecodeError:
+        match = None
     if not match or not 0 < int(match[4]) <= MAX_BLOCK:
         raise CrawlError("malformed cluster.idx line")
     return IndexEntry(key=match[1].encode(), block=Block(file=match[2], offset=int(match[3]), length=int(match[4])))
@@ -137,28 +148,33 @@ def _block_urls(indexes: str, block: Block, prefix: bytes) -> list[str]:
     for line in text.split(b"\n"):
         if not line.startswith(prefix):
             continue
+        header = CDX_HEADER.match(line)
+        if not header:
+            raise CrawlError(f"{where}: malformed CDX line")
         try:
-            record = json.loads(line.split(b" ", 2)[2])
-        except (IndexError, ValueError, RecursionError):
+            record = json.loads(line[header.end():])
+            fields = [record[k] for k in ("url", "status", "mime")] if isinstance(record, dict) else None
+            if fields is None or not all(isinstance(f, str) for f in fields):
+                raise CrawlError(f"{where}: CDX record without a string url, status and mime")
+            record["url"].encode()  # a lone surrogate from a JSON escape is not a URL
+        except (KeyError, ValueError, RecursionError):
             raise CrawlError(f"{where}: malformed CDX line") from None
-        if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("url", "status", "mime")):
-            raise CrawlError(f"{where}: CDX record without a string url, status and mime")
         if record.get("status") == "200" and record.get("mime") == "text/html":
             urls.append(record["url"])
     return urls
 
 
 def _size(url: str) -> int:
-    response_headers = _request(url, method="HEAD")[1]
     try:
-        return int(response_headers["Content-Length"])
+        return int(_request(url, method="HEAD").headers["Content-Length"])
     except (TypeError, ValueError):
         raise CrawlError(f"{url}: no Content-Length") from None
 
 
 def _range(url: str, start: int, end: int) -> bytes:
-    body, response_headers, status = _request(url, headers={"Range": f"bytes={start}-{end}"}, limit=end - start + 1)
-    match = CONTENT_RANGE.fullmatch(response_headers.get("Content-Range") or "")
+    response = _request(url, headers={"Range": f"bytes={start}-{end}"}, limit=end - start + 1)
+    body, status = response.body, response.status
+    match = CONTENT_RANGE.fullmatch(response.headers.get("Content-Range") or "")
     if status != 206 or not match or (int(match[1]), int(match[2])) != (start, end) or int(match[3]) <= end \
             or len(body) != end - start + 1:
         raise CrawlError(f"{url}: range {start}-{end} answered {status} with {len(body)} bytes")
@@ -166,14 +182,14 @@ def _range(url: str, start: int, end: int) -> bytes:
 
 
 def _get(url: str, limit: int) -> bytes:
-    body, _, status = _request(url, limit=limit)
-    if status != 200:
-        raise CrawlError(f"{url}: HTTP {status}")
-    return body
+    response = _request(url, limit=limit)
+    if response.status != 200:
+        raise CrawlError(f"{url}: HTTP {response.status}")
+    return response.body
 
 
-def _request(url: str, method: str = "GET", headers: dict | None = None, limit: int = 0):
-    """(body, headers, status), retrying 429/5xx and network errors. A body longer than `limit` is an error."""
+def _request(url: str, method: str = "GET", headers: dict | None = None, limit: int = 0) -> Response:
+    """One HTTP exchange, retrying 429/5xx and network errors. A body longer than `limit` is an error."""
     request = urllib.request.Request(url, headers=HEADERS | (headers or {}), method=method)
     for pause in (*RETRY_PAUSES, None):
         try:
@@ -181,7 +197,7 @@ def _request(url: str, method: str = "GET", headers: dict | None = None, limit: 
                 body = response.read(limit + 1) if method != "HEAD" else b""
                 if len(body) > limit:
                     raise CrawlError(f"{url}: response longer than {limit} bytes")
-                return body, response.headers, response.status
+                return Response(body=body, headers=response.headers, status=response.status)
         except urllib.error.HTTPError as e:
             e.close()
             if e.code not in RETRYABLE or pause is None:

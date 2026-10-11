@@ -129,6 +129,26 @@ class CapturesTest(unittest.TestCase):
         with self.assertRaisesRegex(CrawlError, "malformed cluster.idx"):
             self.captures()
 
+    def test_non_ascii_index_line_is_an_error(self):
+        self.serve(lines_around(ashby_urls(2), 0, 0), per_block=1)
+        index = self.server.files[INDEXES + "cluster.idx"]
+        self.server.files[INDEXES + "cluster.idx"] = index.replace(b"acme000", b"acme\xff00", 1)
+        with self.assertRaisesRegex(CrawlError, "malformed cluster.idx"):
+            self.captures()
+
+    def test_cdx_line_with_a_bad_timestamp_or_a_surrogate_url_is_an_error(self):
+        for line in [b'com,ashbyhq,jobs)/a/1 2026-09 {"url": "https://jobs.ashbyhq.com/a/1", "status": "200", '
+                     b'"mime": "text/html"}',
+                     b'com,ashbyhq,jobs)/a/1 20260901000000 {"url": "https://jobs.ashbyhq.com/\\ud800", '
+                     b'"status": "200", "mime": "text/html"}']:
+            with self.subTest(line=line[:40]):
+                block = gzip.compress(line + b"\n")
+                self.server.files[INDEXES + "cdx-00000.gz"] = block
+                self.server.files[INDEXES + "cluster.idx"] = \
+                    f"com,ashbyhq,jobs)/a/1 20260901000000\tcdx-00000.gz\t0\t{len(block)}\t1\n".encode()
+                with self.assertRaisesRegex(CrawlError, "malformed CDX"):
+                    self.captures()
+
     def test_malformed_cdx_record_is_an_error(self):
         block = gzip.compress(b"com,ashbyhq,jobs)/a/1 20260901000000 {not json\n")
         self.server.files[INDEXES + "cdx-00000.gz"] = block

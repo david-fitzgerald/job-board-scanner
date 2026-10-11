@@ -69,8 +69,12 @@ def open_db(home: Path) -> sqlite3.Connection:
         raise ConfigError(f"{path}: cannot open database ({type(e).__name__})") from None
     try:
         conn.row_factory = sqlite3.Row
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version > SCHEMA_VERSION:
+            raise ConfigError(f"{path}: database schema {version} is newer than this jobscan's ({SCHEMA_VERSION}): "
+                              "update jobscan")
         conn.executescript(SCHEMA)
-        _migrate(conn)
+        _migrate(conn, version)
     except ConfigError:
         conn.close()
         raise
@@ -80,12 +84,9 @@ def open_db(home: Path) -> sqlite3.Connection:
     return conn
 
 
-def _migrate(conn: sqlite3.Connection) -> None:
+def _migrate(conn: sqlite3.Connection, version: int) -> None:
     """Version 1: Ashby slugs are case-folded in board ids and posting keys (`ashby:Clerk:1` → `ashby:clerk:1`), so
     deliveries and cached tags follow their postings. One transaction; a key collision rolls it all back."""
-    version = conn.execute("PRAGMA user_version").fetchone()[0]
-    if version > SCHEMA_VERSION:
-        raise ConfigError(f"database schema {version} is newer than this jobscan's ({SCHEMA_VERSION}): update jobscan")
     if version == SCHEMA_VERSION:
         return
     conn.create_function("fold_slug", 1, _fold_slug, deterministic=True)
