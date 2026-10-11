@@ -5,8 +5,9 @@ import logging
 import sys
 from pathlib import Path
 
-from jobscan import evaluate, scan, tag
+from jobscan import discover, evaluate, scan, tag
 from jobscan.config import ConfigError, jobscan_home, load_config, load_profile
+from jobscan.crawl import CrawlError
 
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE = 0, 1, 2
 log = logging.getLogger("jobscan")
@@ -19,6 +20,7 @@ class RunLocked(Exception):
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jobscan")
     commands = parser.add_subparsers(dest="command", required=True)
+    commands.add_parser("discover", help="rebuild the board list from the newest Common Crawl crawls (monthly)")
     commands.add_parser("run", help="fetch → filter → tag → write the profile's digest")
     eval_parser = commands.add_parser("eval", help="score the tagging path against a labelled posting set")
     eval_parser.add_argument("set", type=Path, help="JSON list of {id, title, location, description, labels}")
@@ -29,6 +31,8 @@ def main(argv: list[str] | None = None) -> int:
     home = jobscan_home()
     if args.command == "eval":
         return _eval(home, args.set)
+    if args.command == "discover":
+        return _discover(home)
     try:
         config = load_config(home)
         profile = load_profile(home)
@@ -44,6 +48,25 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     print(f"{outcome.profile}\t{outcome.new}\t{outcome.digest_path or '-'}")
     return EXIT_OK if outcome.complete else EXIT_INCOMPLETE
+
+
+def _discover(home: Path) -> int:
+    """Needs only a writable home: no model config, key, profile or boards file."""
+    try:
+        _setup_logging(home)
+        with _run_lock(home):
+            outcome = discover.discover(home)
+    except ConfigError as e:
+        print(f"jobscan: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    except RunLocked:
+        print(f"jobscan: another run is using {home}", file=sys.stderr)
+        return EXIT_USAGE
+    except CrawlError as e:
+        log.error("discover_failed error=%r (the previous board list is kept)", str(e))
+        return EXIT_INCOMPLETE
+    print(f"discovered\t{outcome.boards}\t{','.join(outcome.crawls)}")
+    return EXIT_OK
 
 
 def _eval(home: Path, set_path: Path) -> int:
