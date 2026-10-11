@@ -137,8 +137,8 @@ class TagPostingTest(unittest.TestCase):
         self.server = FakeServer()
         self.addCleanup(self.server.close)
         self.model = ModelConfig(self.server.url, "test/model", "parasail", "fp8")
-        for name in ("PAUSE", "RATE_LIMIT_PAUSE"):
-            patcher = mock.patch.object(tag, name, 0)
+        for name, value in (("PAUSE", 0), ("RATE_LIMIT_PAUSES", (0, 0, 0, 0))):
+            patcher = mock.patch.object(tag, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
 
@@ -256,6 +256,18 @@ class TagPostingTest(unittest.TestCase):
         self.assertEqual(body["temperature"], 0)
         self.assertTrue(body["response_format"]["json_schema"]["strict"])
         self.assertNotIn("reasoning", body)
+
+    def test_rate_limits_get_the_longer_schedule(self):
+        replies = iter([(429, {"error": "slow down"})] * 4 + [model_reply(json.loads(reply()))])
+        self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagSuccess)
+        self.assertEqual(len(self.server.requests), 5)
+
+    def test_persistent_rate_limit_gives_up_after_five_tries(self):
+        self.server.routes["/chat/completions"] = (429, {"error": "slow down"})
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertEqual((type(attempt), attempt.http_status, len(self.server.requests)), (tag.TagFailure, 429, 5))
 
     def test_unavailable_model_fails_after_three_tries(self):
         self.server.routes["/chat/completions"] = (503, {"error": "down"})

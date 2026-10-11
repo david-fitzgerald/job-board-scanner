@@ -40,8 +40,9 @@ class RunTest(unittest.TestCase):
                      ashby_job("3", "Account Executive", location="Berlin"), ashby_job("4", "Engineer")]
         self.ats.routes["/posting-api/job-board/acme"] = (200, lambda _: (200, {"jobs": self.jobs}))
         self.model_ok()
-        for target, name in [(fetch, "RETRY_PAUSES"), (tag, "PAUSE"), (tag, "RATE_LIMIT_PAUSE")]:
-            patcher = mock.patch.object(target, name, (0, 0) if name == "RETRY_PAUSES" else 0)
+        for target, name, value in [(fetch, "RETRY_PAUSES", (0, 0)), (tag, "PAUSE", 0),
+                                    (tag, "RATE_LIMIT_PAUSES", (0, 0, 0, 0))]:
+            patcher = mock.patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
         patcher = mock.patch.dict(os.environ, {"JOBSCAN_HOME": str(self.home)})

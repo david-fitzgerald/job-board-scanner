@@ -20,7 +20,10 @@ from jobscan.config import ConfigError, ModelConfig
 from jobscan.records import Posting
 
 TRIES = 3
-PAUSE, RATE_LIMIT_PAUSE = 5, 30  # seconds before a retry
+PAUSE = 5  # seconds before a retry
+# Provider rate limits (429) outlast a short retry. A headless run can afford to wait, and every posting
+# given up on is a day late; so 429s get their own, longer schedule: up to len(RATE_LIMIT_PAUSES) + 1 tries.
+RATE_LIMIT_PAUSES = (30, 60, 120, 240)
 TIMEOUT = 300
 WORKERS = 4
 STOP_AFTER_FAILURES = 3  # consecutive failed postings → treat the model as unavailable
@@ -159,31 +162,39 @@ def schema(defs: list[TagDef]) -> dict:
 
 
 def tag_posting(posting: Posting, defs: list[TagDef], model: ModelConfig, api_key: str | None) -> TagAttempt:
-    usage, error, status = Usage(), "", None
-    for attempt in range(TRIES):
-        if attempt:
-            time.sleep(RATE_LIMIT_PAUSE if status == 429 else PAUSE)
-        try:
-            reply = _call(model, api_key, prompt(posting, defs), schema(defs))
-        except urllib.error.HTTPError as e:
-            e.close()
-            error, status = f"HTTP {e.code}", e.code
-            continue
-        # Exception classes only, never their text: request errors can echo headers, and the key is one.
-        except (OSError, http.client.HTTPException, ValueError) as e:
-            error, status = type(e).__name__, None
-            if not isinstance(e, ConnectionRefusedError):  # the request may have been sent and billed
-                usage += Usage(cost_reported=False)
-            continue
-        usage += reply.usage
-        try:
-            if reply.content is None:
-                raise ReplyError("no message content")
-            return TagSuccess(results=parse_reply(reply.content, defs, posting), usage=usage,
-                              reasoning_tokens=reply.usage.reasoning_tokens)
-        except ReplyError as e:
-            error, status = f"invalid reply: {e}", None
-    return TagFailure(error=error, http_status=status, usage=usage)
+    """Tries until success or the retry budget for the latest failure is spent; usage sums every try."""
+    usage, tries = Usage(), 0
+    while True:
+        tries += 1
+        outcome = _try_once(posting, defs, model, api_key)
+        usage += outcome.usage
+        if isinstance(outcome, TagSuccess):
+            return TagSuccess(results=outcome.results, usage=usage, reasoning_tokens=outcome.reasoning_tokens)
+        rate_limited = outcome.http_status == 429
+        if tries >= (len(RATE_LIMIT_PAUSES) + 1 if rate_limited else TRIES):
+            return TagFailure(error=outcome.error, http_status=outcome.http_status, usage=usage)
+        time.sleep(RATE_LIMIT_PAUSES[min(tries, len(RATE_LIMIT_PAUSES)) - 1] if rate_limited else PAUSE)
+
+
+def _try_once(posting: Posting, defs: list[TagDef], model: ModelConfig, api_key: str | None) -> TagAttempt:
+    """One request; the outcome's usage covers this try only."""
+    try:
+        reply = _call(model, api_key, prompt(posting, defs), schema(defs))
+    except urllib.error.HTTPError as e:
+        e.close()
+        return TagFailure(error=f"HTTP {e.code}", http_status=e.code, usage=Usage())
+    # Exception classes only, never their text: request errors can echo headers, and the key is one.
+    except (OSError, http.client.HTTPException, ValueError) as e:
+        # Unless the connection was refused, the request may have been sent and billed.
+        unknown = Usage() if isinstance(e, ConnectionRefusedError) else Usage(cost_reported=False)
+        return TagFailure(error=type(e).__name__, http_status=None, usage=unknown)
+    try:
+        if reply.content is None:
+            raise ReplyError("no message content")
+        return TagSuccess(results=parse_reply(reply.content, defs, posting), usage=reply.usage,
+                          reasoning_tokens=reply.usage.reasoning_tokens)
+    except ReplyError as e:
+        return TagFailure(error=f"invalid reply: {e}", http_status=None, usage=reply.usage)
 
 
 class _NoRedirect(urllib.request.HTTPRedirectHandler):
