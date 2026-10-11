@@ -37,7 +37,10 @@ def parse(board: Board, data) -> tuple[Posting, ...]:
     jobs = data.get("jobs") if isinstance(data, dict) else None
     if not isinstance(jobs, list):
         raise BoardError("response has no `jobs` list")
-    return tuple(p for p in (_posting(board, i, job) for i, job in enumerate(jobs)) if p is not None)
+    postings = tuple(p for p in (_posting(board, i, job) for i, job in enumerate(jobs)) if p is not None)
+    if len({p.key for p in postings}) != len(postings):
+        raise BoardError("duplicate listed job ids")
+    return postings
 
 
 def _posting(board: Board, index: int, job) -> Posting | None:

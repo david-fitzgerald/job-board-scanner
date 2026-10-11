@@ -86,7 +86,7 @@ def run_eval(items: list[LabelledPosting], config: Config) -> EvalReport:
     _save(config.home, items, attempts)
     return score(items, predictions, usage=sum((a.usage for a in attempts.values()), tag.Usage()),
                  unreasoned=sum(1 for a in attempts.values()
-                                if isinstance(a, tag.TagSuccess) and not a.usage.reasoning_tokens))
+                                if isinstance(a, tag.TagSuccess) and not a.reasoning_tokens))
 
 
 def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.TagResult]],

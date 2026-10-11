@@ -166,6 +166,37 @@ class TagPostingTest(unittest.TestCase):
         self.assertIsInstance(attempt, tag.TagSuccess)
         self.assertEqual((attempt.usage.cost, attempt.usage.cost_reported), (0.002, False))
 
+    def test_truncated_200_body_marks_billing_unknown(self):
+        replies = iter([(200, b'{"choices": [{"mess'), model_reply(json.loads(reply()), cost=0.002)])
+        self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagSuccess)
+        self.assertEqual((attempt.usage.cost, attempt.usage.cost_reported), (0.002, False))
+
+    def test_overflowing_cost_is_unreported_not_a_crash(self):
+        status, body = model_reply(json.loads(reply()))
+        body["usage"] = {"cost": 10 ** 400}
+        self.server.routes["/chat/completions"] = (200, lambda payload: (status, body))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagSuccess)
+        self.assertFalse(attempt.usage.cost_reported)
+
+    def test_success_reports_the_accepted_replys_reasoning(self):
+        bad = {"choices": [{"message": {"content": "garbage"}}],
+               "usage": {"cost": 0.001, "completion_tokens_details": {"reasoning_tokens": 100}}}
+        replies = iter([(200, bad), model_reply(json.loads(reply()))])
+        self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertEqual((attempt.reasoning_tokens, attempt.usage.reasoning_tokens), (0, 100))
+
+    def test_rejected_value_is_not_echoed_in_the_error(self):
+        leaky = json.loads(reply())
+        leaky["founding"]["value"] = "call jane@example.com"
+        self.server.routes["/chat/completions"] = (200, lambda payload: model_reply(leaky))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagFailure)
+        self.assertNotIn("jane", attempt.error)
+
     def test_redirects_are_not_followed(self):
         elsewhere = FakeServer()
         self.addCleanup(elsewhere.close)

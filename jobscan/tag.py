@@ -64,7 +64,8 @@ class Usage:
 @dataclass(frozen=True)
 class TagSuccess:
     results: dict[str, TagResult]
-    usage: Usage
+    usage: Usage  # every reply for this posting, rejected ones included
+    reasoning_tokens: int  # the accepted reply's alone: evidence that the answer used reasoning
 
 
 @dataclass(frozen=True)
@@ -176,7 +177,8 @@ def tag_posting(posting: Posting, defs: list[TagDef], model: ModelConfig, api_ke
         try:
             if reply.content is None:
                 raise ReplyError("no message content")
-            return TagSuccess(results=parse_reply(reply.content, defs, posting), usage=usage)
+            return TagSuccess(results=parse_reply(reply.content, defs, posting), usage=usage,
+                              reasoning_tokens=reply.usage.reasoning_tokens)
         except ReplyError as e:
             error, status = f"invalid reply: {e}", None
     return TagFailure(error=error, http_status=status, usage=usage)
@@ -205,17 +207,18 @@ def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: d
     request = urllib.request.Request(f"{model.base_url}/chat/completions", data=json.dumps(body).encode(),
                                      headers=headers)
     with _OPENER.open(request, timeout=TIMEOUT) as response:
-        raw = response.read()
-    try:
-        reply = json.loads(raw)
-    except ValueError:
-        reply = None
+        try:
+            reply = json.loads(response.read())
+        # The request was accepted (and may be billed), so a cut-off or unreadable body is an unknown cost,
+        # not an unbilled failure.
+        except (OSError, http.client.HTTPException, ValueError):
+            reply = None
     if not isinstance(reply, dict):  # answered, possibly billed, but nothing readable: billing unknown
         return _Reply(content=None, usage=Usage(cost_reported=False))
     usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
     details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
     cost, reasoning = usage.get("cost"), details.get("reasoning_tokens")
-    cost_ok = isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0
+    cost_ok = _finite_non_negative(cost)
     reasoning_ok = isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0
     choices = reply.get("choices")
     message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) \
@@ -224,6 +227,15 @@ def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: d
     return _Reply(content=content if isinstance(content, str) else None,
                   usage=Usage(cost=float(cost) if cost_ok else 0.0, cost_reported=cost_ok,
                               reasoning_tokens=reasoning if reasoning_ok else 0))
+
+
+def _finite_non_negative(value) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value) and value >= 0
+    except OverflowError:  # a JSON integer too large for a float
+        return False
 
 
 def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str, TagResult]:
@@ -258,7 +270,7 @@ def _value(d: TagDef, raw):
     if d.values is None:
         return d.default if d.default and value.lower() == d.default else value
     if value not in d.values:
-        raise ReplyError(f"`{d.name}` value {value!r} not in {d.values}")
+        raise ReplyError(f"`{d.name}` value not in {d.values}")  # the rejected text itself is never logged
     return value
 
 

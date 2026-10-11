@@ -6,7 +6,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 class FakeServer:
     """Serves `routes[path]` = (status, body). A callable body gets the parsed JSON request and returns
-    (status, body). Every request is recorded in `requests` as (method, path, json_body)."""
+    (status, body). A bytes body is sent truncated: its Content-Length promises more than arrives.
+    Every request is recorded in `requests` as (method, path, json_body)."""
 
     def __init__(self):
         self.routes = {}
@@ -26,12 +27,13 @@ class FakeServer:
                 status, body = server.routes.get(self.path, (404, {"error": "not found"}))
                 if callable(body):
                     status, body = body(payload)
-                raw = body.encode() if isinstance(body, str) else json.dumps(body).encode()
+                truncated = isinstance(body, bytes)
+                raw = body if truncated else body.encode() if isinstance(body, str) else json.dumps(body).encode()
                 self.send_response(status)
                 for name, value in getattr(server, "extra_headers", {}).items():
                     self.send_header(name, value)
                 self.send_header("Content-Type", "application/json")
-                self.send_header("Content-Length", str(len(raw)))
+                self.send_header("Content-Length", str(len(raw) + (100 if truncated else 0)))
                 self.end_headers()
                 self.wfile.write(raw)
 

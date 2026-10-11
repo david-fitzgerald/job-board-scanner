@@ -109,6 +109,10 @@ class FetchBoardTest(unittest.TestCase):
             self.assertIsInstance(reason, str, bad)
             self.assertTrue(reason.startswith("job 1:"), reason)
 
+    def test_duplicate_listed_ids_fail_the_board(self):
+        self.serve("acme", 200, {"jobs": [ashby_job("1", "AE"), ashby_job("1", "Other AE")]})
+        self.assertEqual(self.fetch_one(), "duplicate listed job ids")
+
     def test_retries_server_errors_then_gives_up(self):
         self.serve("acme", 503, {"error": "busy"})
         self.assertEqual(self.fetch_one(), "HTTP 503")
