@@ -127,6 +127,13 @@ class FetchBoardTest(unittest.TestCase):
             self.assertIsInstance(reason, str, bad)
             self.assertTrue(reason.startswith("job 1:"), reason)
 
+    def test_lone_surrogate_fails_only_its_board(self):
+        self.serve("acme", 200, '{"jobs": [{"id": "1", "title": "AE", "descriptionPlain": "\\ud800"}]}')
+        self.serve("beta", 200, {"jobs": [ashby_job("1", "AE")]})
+        fetched, failed = split([self.board("acme"), self.board("beta")])
+        self.assertEqual(([r.board.slug for r in fetched], [(f.board.slug, f.reason) for f in failed]),
+                         (["beta"], [("acme", "job 0: `descriptionPlain` is not valid Unicode")]))
+
     def test_duplicate_listed_ids_fail_the_board(self):
         self.serve("acme", 200, {"jobs": [ashby_job("1", "AE"), ashby_job("1", "Other AE")]})
         self.assertEqual(self.fetch_one(), "duplicate listed job ids")

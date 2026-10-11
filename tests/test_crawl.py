@@ -183,6 +183,13 @@ class LatestCrawlsTest(unittest.TestCase):
         self.assertEqual(crawl.latest_crawls(3, base=self.server.url),
                          ["CC-MAIN-2026-39", "CC-MAIN-2026-34", "CC-MAIN-2026-30"])
 
+    def test_undecodable_crawl_list_is_an_error(self):
+        self.server.files.update(crawl_list("CC-MAIN-2026-39", "CC-MAIN-2026-34", "CC-MAIN-2026-30", "CC-MAIN-2026-25"))
+        page = "/cc-index/collections/index.html"
+        self.server.files[page] = self.server.files[page].replace(b"2026-39", b"2026\xff39")
+        with self.assertRaisesRegex(CrawlError, "not valid UTF-8"):
+            crawl.latest_crawls(3, base=self.server.url)
+
     def test_too_few_crawls_is_an_error(self):
         self.server.files.update(crawl_list("CC-MAIN-2026-39", "CC-MAIN-2026-34"))
         with self.assertRaisesRegex(CrawlError, "need 3"):

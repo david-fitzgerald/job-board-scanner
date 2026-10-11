@@ -10,7 +10,7 @@ from jobscan.records import Board, BoardError, Posting
 
 ATS = "ashby"
 DISPLAY_NAME = "Ashby"
-CRAWL_HOST = "jobs.ashbyhq.com"  # where Common Crawl captures this ATS's boards
+CRAWL_HOST = "jobs.ashbyhq.com"
 API = "https://api.ashbyhq.com/posting-api/job-board/"
 
 
@@ -81,6 +81,10 @@ def _field(record: dict, name: str, index: int, required: bool = False) -> str |
         return None
     if not isinstance(value, str) or (required and not value.strip()):
         raise BoardError(f"job {index}: `{name}` is not {'a non-empty ' if required else 'a '}string")
+    try:
+        value.encode()  # a lone surrogate from a JSON escape can't be stored
+    except UnicodeEncodeError:
+        raise BoardError(f"job {index}: `{name}` is not valid Unicode") from None
     return value
 
 

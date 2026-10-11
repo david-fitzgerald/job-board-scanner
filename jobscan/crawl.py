@@ -59,7 +59,10 @@ class IndexEntry:
 
 def latest_crawls(n: int, base: str = BASE) -> list[str]:
     """The n newest crawl ids that have index files."""
-    page = _get(base + "cc-index/collections/index.html", limit=MAX_PAGE).decode("utf-8", "replace")
+    try:
+        page = _get(base + "cc-index/collections/index.html", limit=MAX_PAGE).decode()
+    except UnicodeDecodeError:
+        raise CrawlError("crawl list is not valid UTF-8") from None
     crawls = sorted(set(CRAWL_ID.findall(page)), reverse=True)
     if len(crawls) < n:
         raise CrawlError(f"crawl list names {len(crawls)} crawls, need {n}")
