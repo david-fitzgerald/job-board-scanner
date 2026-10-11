@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from jobscan import scan, tag
+from jobscan import evaluate, scan, tag
 from jobscan.config import ConfigError, jobscan_home, load_config, load_profile
 
 EXIT_OK, EXIT_INCOMPLETE, EXIT_USAGE = 0, 1, 2
@@ -20,11 +20,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="jobscan")
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="fetch → filter → tag → write the profile's digest")
+    eval_parser = commands.add_parser("eval", help="score the tagging path against a labelled posting set")
+    eval_parser.add_argument("set", type=Path, help="JSON list of {id, title, location, description, labels}")
     try:
-        parser.parse_args(argv)
+        args = parser.parse_args(argv)
     except SystemExit as e:
         return EXIT_OK if e.code == 0 else EXIT_USAGE
     home = jobscan_home()
+    if args.command == "eval":
+        return _eval(home, args.set)
     try:
         config = load_config(home)
         profile = load_profile(home)
@@ -40,6 +44,17 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
     print(f"{outcome.profile}\t{outcome.new}\t{outcome.digest_path or '-'}")
     return EXIT_OK if outcome.complete else EXIT_INCOMPLETE
+
+
+def _eval(home: Path, set_path: Path) -> int:
+    try:
+        config = load_config(home)
+        items = evaluate.load_set(set_path)
+    except ConfigError as e:
+        print(f"jobscan: {e}", file=sys.stderr)
+        return EXIT_USAGE
+    print(evaluate.format_report(evaluate.run_eval(items, config)))
+    return EXIT_OK
 
 
 def _setup_logging(home: Path) -> None:

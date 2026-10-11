@@ -60,8 +60,16 @@ class ReplyError(Exception):
     """The model answered, but not with a valid tag object."""
 
 
+def builtin_names() -> tuple[str, ...]:
+    return tuple(_builtins())
+
+
+def _builtins() -> dict:
+    return tomllib.loads((Path(__file__).parent / "tags.toml").read_text())
+
+
 def definitions(tag_names: tuple[str, ...], eligible_where: str) -> list[TagDef]:
-    builtins = tomllib.loads((Path(__file__).parent / "tags.toml").read_text())
+    builtins = _builtins()
     unknown = [n for n in tag_names if n not in builtins]
     if unknown:
         raise ConfigError(f"unknown tags {unknown}; built-ins are {sorted(builtins)}")
