@@ -1,7 +1,7 @@
 import unittest
 
 from jobscan.config import Profile
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 from jobscan.prefilter import matches
 
 PROFILE = Profile(
@@ -11,7 +11,7 @@ PROFILE = Profile(
 
 
 def posting(title, location="London"):
-    return Posting(key="ashby:acme:1", board="acme", company="Acme", title=title, location=location,
+    return Posting(key="ashby:acme:1", ats="ashby", board="ashby:acme", company="Acme", title=title, location=location,
                    url="https://jobs.ashbyhq.com/acme/1", description="")
 
 

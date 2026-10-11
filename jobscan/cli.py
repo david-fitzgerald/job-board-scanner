@@ -53,7 +53,12 @@ def _eval(home: Path, set_path: Path) -> int:
     except ConfigError as e:
         print(f"jobscan: {e}", file=sys.stderr)
         return EXIT_USAGE
-    print(evaluate.format_report(evaluate.run_eval(items, config)))
+    try:
+        report = evaluate.run_eval(items, config)
+    except OSError as e:
+        print(f"jobscan: could not save eval predictions under {home / 'eval'} ({type(e).__name__})", file=sys.stderr)
+        return EXIT_INCOMPLETE
+    print(evaluate.format_report(report))
     return EXIT_OK
 
 
@@ -61,8 +66,12 @@ def _setup_logging(home: Path) -> None:
     for old in list(log.handlers):  # main() can run more than once per process (tests)
         log.removeHandler(old)
         old.close()
+    try:
+        file_handler = logging.FileHandler(home / "runs.log")
+    except OSError as e:
+        raise ConfigError(f"{home / 'runs.log'}: not writable ({type(e).__name__})") from None
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    for handler in (logging.StreamHandler(sys.stderr), logging.FileHandler(home / "runs.log")):
+    for handler in (logging.StreamHandler(sys.stderr), file_handler):
         handler.setFormatter(formatter)
         log.addHandler(handler)
     log.setLevel(logging.INFO)
@@ -75,7 +84,10 @@ class _run_lock:
         self.path = home / ".lock"
 
     def __enter__(self):
-        self.file = self.path.open("w")
+        try:
+            self.file = self.path.open("w")
+        except OSError as e:
+            raise ConfigError(f"{self.path}: not writable ({type(e).__name__})") from None
         try:
             fcntl.flock(self.file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

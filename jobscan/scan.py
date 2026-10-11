@@ -45,9 +45,9 @@ def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int
     log.info("fetch_start boards=%d skipped_not_ashby=%d", len(boards), skipped)
     fetched, failed = fetch.fetch_all(boards)
     for result in fetched:
-        store.apply_fetch(conn, result.board.slug, result.postings, now)
+        store.apply_fetch(conn, result.board.id, result.postings, now)
     for failure in failed:
-        log.warning("board_failed company=%r slug=%s reason=%r", failure.board.company, failure.board.slug,
+        log.warning("board_failed company=%r board=%s reason=%r", failure.board.company, failure.board.id,
                     failure.reason)
     log.info("fetch_done boards_read=%d boards_failed=%d postings=%d", len(fetched), len(failed),
              sum(len(r.postings) for r in fetched))
@@ -68,15 +68,19 @@ def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: lis
         if attempt is None:
             continue
         if attempt.results is None:
-            log.warning("tag_failed posting=%s error=%r", s.posting.key, attempt.error)
+            # Auth failures need the operator; anything else may clear by the next run.
+            level = logging.ERROR if attempt.error in ("HTTP 401", "HTTP 402", "HTTP 403") else logging.WARNING
+            log.log(level, "tag_failed posting=%s error=%r", s.posting.key, attempt.error)
             continue
         store.save_results(conn, s, defs, model_id, attempt.results)
         results[s.posting.key] = attempt.results
     tagged = sum(1 for a in attempts.values() if a.results is not None)
-    cost = sum(a.cost for a in attempts.values())
+    usage = sum((a.usage for a in attempts.values()), tag.Usage())
+    cost = usage.cost
     if len(attempts) < len(needed):
         log.error("tag_stopped reason=consecutive_failures not_started=%d", len(needed) - len(attempts))
-    log.info("tag_done tagged=%d failed=%d cost=%.4f", tagged, len(attempts) - tagged, cost)
+    log.info("tag_done tagged=%d failed=%d cost=%.4f cost_reported=%s reasoning_tokens=%d", tagged,
+             len(attempts) - tagged, cost, usage.cost_reported, usage.reasoning_tokens)
     entries = [digest.DigestEntry(posting=s, tags={d.name: results[s.posting.key][d.name] for d in defs})
                for s in matched if len(results[s.posting.key]) == len(defs)]
     return entries, tagged, cost
@@ -100,5 +104,4 @@ def _digest(conn: sqlite3.Connection, config: Config, profile: Profile, entries:
 
 
 def _now() -> str:
-    # Fixed-width microsecond timestamps compare correctly as strings; store.apply_fetch relies on that.
     return datetime.now(timezone.utc).isoformat(timespec="microseconds")

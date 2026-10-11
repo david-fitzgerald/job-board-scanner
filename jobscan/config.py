@@ -60,12 +60,20 @@ def load_config(home: Path) -> Config:
         provider=_string(model, "provider", path, required=False),
         quantization=_string(model, "quantization", path, required=False),
     )
+    url = urlparse(model_config.base_url)
+    if url.scheme not in ("http", "https") or not url.hostname:
+        raise ConfigError(f"{path}: `model.base_url` must be an http(s) URL")
     # The OpenRouter key goes to OpenRouter only, never to another configured endpoint.
     api_key = None
-    if urlparse(model_config.base_url).hostname == "openrouter.ai":
+    if url.hostname == "openrouter.ai":
+        if not (model_config.provider and model_config.quantization):
+            raise ConfigError(f"{path}: OpenRouter needs `model.provider` and `model.quantization` pinned")
         api_key = os.environ.get("OPENROUTER_API_KEY") or None
         if api_key is None:
             raise ConfigError("OPENROUTER_API_KEY is not set")
+        if not api_key.isascii() or not api_key.isprintable() or " " in api_key:
+            # Checked here because a malformed header value would otherwise surface inside exception text.
+            raise ConfigError("OPENROUTER_API_KEY contains whitespace or control characters")
     return Config(home=home, boards_file=boards_file, model=model_config, api_key=api_key)
 
 
@@ -82,7 +90,7 @@ def load_profile(home: Path) -> Profile:
         exclude_titles=_strings(data, "exclude_titles", path, required=False),
         locations=_strings(data, "locations", path),
         eligible_where=_string(data, "eligible_where", path),
-        tags=_strings(data, "tags", path),
+        tags=_unique(_strings(data, "tags", path), "tags", path),
     )
 
 
@@ -92,6 +100,8 @@ def _read_toml(path: Path) -> dict:
             return tomllib.load(f)
     except FileNotFoundError:
         raise ConfigError(f"{path}: not found") from None
+    except OSError as e:
+        raise ConfigError(f"{path}: not readable ({type(e).__name__})") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from None
 
@@ -112,3 +122,9 @@ def _strings(data: dict, key: str, path: Path, required: bool = True) -> tuple[s
     if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
         raise ConfigError(f"{path}: `{key}` must be a non-empty list of strings")
     return tuple(value)
+
+
+def _unique(values: tuple[str, ...], key: str, path: Path) -> tuple[str, ...]:
+    if len(set(values)) != len(values):
+        raise ConfigError(f"{path}: `{key}` lists a name twice")
+    return values

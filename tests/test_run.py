@@ -79,7 +79,7 @@ class RunTest(unittest.TestCase):
         code, (_, new, _) = self.run_cli()
         self.assertEqual((code, new), (0, "2"))
         log = (self.home / "runs.log").read_text()
-        self.assertIn("board_failed company='Broken' slug=broken reason='HTTP 500'", log)
+        self.assertIn("board_failed company='Broken' board=ashby:broken reason='HTTP 500'", log)
 
     def test_model_down_carries_postings_over_until_it_returns(self):
         self.model.routes["/chat/completions"] = (503, {"error": "down"})

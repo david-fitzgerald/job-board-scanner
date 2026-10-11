@@ -2,7 +2,7 @@
 import re
 
 from jobscan.config import Profile
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 
 
 def matches(posting: Posting, profile: Profile) -> bool:

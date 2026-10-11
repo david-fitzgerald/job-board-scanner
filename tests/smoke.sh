@@ -35,7 +35,7 @@ second=$(headless_run 2>>"$home/smoke-stderr.log") || { echo "FAIL: second run e
 echo "run 1: $first"
 echo "run 2: $second"
 
-FIRST="$first" SECOND="$second" clean_env python3 - <<'PY'
+clean_env env FIRST="$first" SECOND="$second" python3 - <<'PY'
 import os, sqlite3
 from pathlib import Path
 from jobscan import tag
@@ -60,6 +60,6 @@ evidence = [quote for results in calls.values() if any(h == founding_hash for h,
 assert evidence, "no delivered posting has a model-sourced founding value plus a verified quote from the same reply"
 assert any(f'"{quote}"' in digest for quote in evidence), "verified quote missing from the rendered digest"
 (cost,) = db.execute("SELECT sum(cost) FROM runs").fetchone()
-assert cost < 0.01, f"recorded cost ${cost:.4f} is not below $0.01"
+assert 0 < cost < 0.01, f"recorded cost ${cost:.4f} is not in (0, $0.01): zero means no billing evidence"
 print(f"PASS: {new} postings tagged and delivered, second run empty, cost ${cost:.4f}")
 PY

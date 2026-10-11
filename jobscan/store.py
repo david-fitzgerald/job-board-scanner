@@ -5,12 +5,12 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 from jobscan.tag import TagDef, TagResult
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS postings (
-    key TEXT PRIMARY KEY, board TEXT NOT NULL, company TEXT NOT NULL, title TEXT NOT NULL,
+    key TEXT PRIMARY KEY, ats TEXT NOT NULL, board TEXT NOT NULL, company TEXT NOT NULL, title TEXT NOT NULL,
     location TEXT NOT NULL, url TEXT NOT NULL, description TEXT NOT NULL, input_hash TEXT NOT NULL,
     first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, closed INTEGER NOT NULL DEFAULT 0
 );
@@ -62,21 +62,21 @@ def input_hash(posting: Posting) -> str:
 
 
 def apply_fetch(conn: sqlite3.Connection, board: str, postings: tuple[Posting, ...], now: str) -> None:
-    """Record one successfully read board: upsert what it lists (reopening re-seen postings) and close
-    the board's postings it no longer lists. Never call this for a board whose fetch failed."""
+    """Record one successfully read board as the full truth for that board: what it lists is open (re-seen
+    postings reopen), everything else of the board's is closed. Never call this for a board whose fetch failed."""
     with conn:
+        conn.execute("UPDATE postings SET closed = 1 WHERE board = ?", (board,))
         conn.executemany(
-            """INSERT INTO postings (key, board, company, title, location, url, description, input_hash,
+            """INSERT INTO postings (key, ats, board, company, title, location, url, description, input_hash,
                                      first_seen, last_seen, closed)
-               VALUES (:key, :board, :company, :title, :location, :url, :description, :input_hash, :now, :now, 0)
+               VALUES (:key, :ats, :board, :company, :title, :location, :url, :description, :input_hash,
+                       :now, :now, 0)
                ON CONFLICT (key) DO UPDATE SET
                    company = excluded.company, title = excluded.title, location = excluded.location,
                    url = excluded.url, description = excluded.description, input_hash = excluded.input_hash,
                    last_seen = excluded.last_seen, closed = 0""",
             [{**vars(p), "input_hash": input_hash(p), "now": now} for p in postings],
         )
-        # Every posting the board still lists now carries last_seen = now.
-        conn.execute("UPDATE postings SET closed = 1 WHERE board = ? AND last_seen < ?", (board, now))
 
 
 def pending(conn: sqlite3.Connection, profile: str) -> list[StoredPosting]:
@@ -88,7 +88,7 @@ def pending(conn: sqlite3.Connection, profile: str) -> list[StoredPosting]:
         (profile,),
     )
     return [StoredPosting(
-        posting=Posting(key=r["key"], board=r["board"], company=r["company"], title=r["title"],
+        posting=Posting(key=r["key"], ats=r["ats"], board=r["board"], company=r["company"], title=r["title"],
                         location=r["location"], url=r["url"], description=r["description"]),
         input_hash=r["input_hash"],
         first_seen=r["first_seen"],

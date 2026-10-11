@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from jobscan.config import ConfigError, ModelConfig
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 
 TRIES = 3
 PAUSE, RATE_LIMIT_PAUSE = 5, 30  # seconds before a retry
@@ -37,7 +37,7 @@ class TagDef:
     @property
     def hash(self) -> str:
         """Identity of the question asked; an edited definition invalidates cached answers."""
-        return hashlib.sha256(json.dumps([self.definition, self.values, self.multi]).encode()).hexdigest()
+        return hashlib.sha256(json.dumps([self.definition, self.values, self.multi, self.default]).encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -49,11 +49,29 @@ class TagResult:
 
 
 @dataclass(frozen=True)
+class Usage:
+    """Billing and reasoning evidence summed over every reply received for one posting, rejected ones included."""
+    cost: float = 0.0
+    cost_reported: bool = True  # False if any reply came without a cost (local endpoints never report one)
+    reasoning_tokens: int = 0
+
+    def __add__(self, other: "Usage") -> "Usage":
+        return Usage(self.cost + other.cost, self.cost_reported and other.cost_reported,
+                     self.reasoning_tokens + other.reasoning_tokens)
+
+
+@dataclass(frozen=True)
 class TagAttempt:
-    """One posting's tagging outcome. Cost counts every billed reply, including rejected ones."""
+    """One posting's tagging outcome: `results` on success, `error` otherwise; usage either way."""
     results: dict[str, TagResult] | None
-    cost: float
+    usage: Usage
     error: str | None
+
+
+@dataclass(frozen=True)
+class _Reply:
+    content: str | None  # None when the response envelope carries no message text
+    usage: Usage
 
 
 class ReplyError(Exception):
@@ -131,32 +149,32 @@ def schema(defs: list[TagDef]) -> dict:
 
 
 def tag_posting(posting: Posting, defs: list[TagDef], model: ModelConfig, api_key: str | None) -> TagAttempt:
-    cost, error = 0.0, None
+    usage, error = Usage(), None
     for attempt in range(TRIES):
         if attempt:
             time.sleep(RATE_LIMIT_PAUSE if error == "HTTP 429" else PAUSE)
         try:
-            content, call_cost = _call(model, api_key, prompt(posting, defs), schema(defs))
+            reply = _call(model, api_key, prompt(posting, defs), schema(defs))
         except urllib.error.HTTPError as e:
             e.close()
             error = f"HTTP {e.code}"
             continue
+        # Exception classes only, never their text: request errors can echo headers, and the key is one.
         except (OSError, http.client.HTTPException, ValueError) as e:
-            error = f"{type(e).__name__}: {e}"
+            error = type(e).__name__
             continue
-        cost += call_cost
+        usage += reply.usage
         try:
-            if content is None:
+            if reply.content is None:
                 raise ReplyError("no message content")
-            return TagAttempt(results=parse_reply(content, defs, posting), cost=cost, error=None)
+            return TagAttempt(results=parse_reply(reply.content, defs, posting), usage=usage, error=None)
         except ReplyError as e:
             error = f"invalid reply: {e}"
-    return TagAttempt(results=None, cost=cost, error=error)
+    return TagAttempt(results=None, usage=usage, error=error)
 
 
-def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: dict) -> tuple[str | None, float]:
-    """One chat-completions request; returns the message content (None when the envelope has none) and the
-    billed cost (0 when not reported). Cost is read before anything is validated, so a rejected reply still counts."""
+def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: dict) -> _Reply:
+    """One chat-completions request. Usage is read before anything is validated, so a rejected reply still counts."""
     body = {"model": model.slug, "temperature": 0, "usage": {"include": True},
             "messages": [{"role": "user", "content": text}],
             "response_format": {"type": "json_schema",
@@ -170,14 +188,19 @@ def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: d
     with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
         reply = json.load(response)
     if not isinstance(reply, dict):
-        return None, 0.0
-    usage = reply.get("usage")
-    cost = usage.get("cost") if isinstance(usage, dict) else None
+        return _Reply(content=None, usage=Usage(cost_reported=False))
+    usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
+    cost = usage.get("cost")
+    details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
+    reasoning = details.get("reasoning_tokens")
     choices = reply.get("choices")
     message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) \
         else None
     content = message.get("content") if isinstance(message, dict) else None
-    return (content if isinstance(content, str) else None), (float(cost) if isinstance(cost, (int, float)) else 0.0)
+    return _Reply(content=content if isinstance(content, str) else None,
+                  usage=Usage(cost=float(cost) if isinstance(cost, (int, float)) else 0.0,
+                              cost_reported=isinstance(cost, (int, float)),
+                              reasoning_tokens=reasoning if isinstance(reasoning, int) else 0))
 
 
 def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str, TagResult]:
@@ -185,15 +208,15 @@ def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str,
         data = json.loads(content)
     except (TypeError, json.JSONDecodeError):
         raise ReplyError("not JSON") from None
-    if not isinstance(data, dict):
-        raise ReplyError("not an object")
-    return {d.name: _result(d, data.get(d.name), posting) for d in defs}
+    if not isinstance(data, dict) or set(data) != {d.name for d in defs}:
+        raise ReplyError("not an object with exactly the requested tags")
+    return {d.name: _result(d, data[d.name], posting) for d in defs}
 
 
 def _result(d: TagDef, cell, posting: Posting) -> TagResult:
-    if not isinstance(cell, dict) or "value" not in cell:
-        raise ReplyError(f"`{d.name}` missing")
-    value, quote = _value(d, cell["value"]), cell.get("quote")
+    if not isinstance(cell, dict) or set(cell) != {"value", "quote"}:
+        raise ReplyError(f"`{d.name}` is not a {{value, quote}} object")
+    value, quote = _value(d, cell["value"]), cell["quote"]
     if quote is not None and not isinstance(quote, str):
         raise ReplyError(f"`{d.name}` quote is not a string")
     quote = quote.strip() if quote and quote.strip() else None
@@ -229,10 +252,12 @@ def _normalise(text: str) -> str:
 
 
 def verify_quote(quote: str, posting: Posting) -> bool:
-    """True when the quote appears in the posting's title, location or description, ignoring Unicode
-    compatibility forms, curly quotes, dash variants and whitespace runs. Blank quotes never verify."""
+    """True when the quote appears within one of the posting's title, location or description (never spanning
+    two), ignoring Unicode compatibility forms, curly quotes, dash variants and whitespace runs.
+    Blank quotes never verify."""
     needle = _normalise(quote)
-    return bool(needle) and needle in _normalise(" ".join([posting.title, posting.location, posting.description]))
+    return bool(needle) and any(needle in _normalise(field)
+                                for field in (posting.title, posting.location, posting.description))
 
 
 def tag_all(postings: list[Posting], defs: list[TagDef], model: ModelConfig, api_key: str | None,

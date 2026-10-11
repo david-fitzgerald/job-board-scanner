@@ -6,11 +6,13 @@ from pathlib import Path
 
 from jobscan import tag
 from jobscan.config import Config, ConfigError
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 
 ELIGIBLE_WHERE = "the UK"  # the G2 set's labels answer UK eligibility
 MINORITY = {"founding": lambda v: v == "yes", "location_eligible": lambda v: v == "no",
             "language_required": lambda v: v != "no"}  # the gate tags and their minority answer
+LABEL_VALUES = {"founding": {"yes", "no"}, "location_eligible": {"yes", "no", "unknown"},
+                "language_required": None}  # None: free text ("no" or a language)
 BAR_ACCURACY, BAR_RECALL, BAR_QUOTES = 0.90, 0.80, 0.95
 
 
@@ -40,24 +42,41 @@ class EvalReport:
     scores: list[TagScore]
     quotes: int
     quote_rate: float | None  # None: no quotes at all, which fails the gate
-    cost: float
+    usage: tag.Usage
+    unreasoned: int  # tagged postings whose replies carried no reasoning tokens
     passed: bool
 
 
 def load_set(path: Path) -> list[LabelledPosting]:
+    """Parse the whole set before any model call: a malformed row is a usage error, not a mid-run crash."""
     try:
         rows = json.loads(path.read_text())
-        items = [LabelledPosting(
-            id=str(r["id"]),
-            posting=Posting(key=str(r["id"]), board="eval", company="", title=r["title"], location=r["location"],
-                            url="", description=r["description"]),
-            labels={k: str(v) for k, v in r["labels"].items()},
-        ) for r in rows]
-    except (OSError, ValueError, KeyError, TypeError, AttributeError) as e:
-        raise ConfigError(f"{path}: not a labelled set ({type(e).__name__}: {e})") from None
+    except (OSError, ValueError) as e:
+        raise ConfigError(f"{path}: not readable JSON ({type(e).__name__})") from None
+    if not isinstance(rows, list):
+        raise ConfigError(f"{path}: must be a JSON list")
+    items = [_labelled(path, n, row) for n, row in enumerate(rows)]
     if len({i.id for i in items}) != len(items):
         raise ConfigError(f"{path}: duplicate ids")
     return items
+
+
+def _labelled(path: Path, n: int, row) -> LabelledPosting:
+    fields = ("id", "title", "location", "description")
+    if not isinstance(row, dict) or not all(isinstance(row.get(f), str) for f in fields) \
+            or not isinstance(row.get("labels"), dict):
+        raise ConfigError(f"{path}: row {n} needs string {', '.join(fields)} and a `labels` object")
+    labels = {}
+    for name, allowed in LABEL_VALUES.items():
+        if name not in row["labels"]:
+            continue
+        value = row["labels"][name]
+        if not isinstance(value, str) or not value.strip() or (allowed and value.lower() not in allowed):
+            raise ConfigError(f"{path}: row {n}: label `{name}` = {value!r} is not allowed")
+        labels[name] = value.strip().lower()
+    return LabelledPosting(id=row["id"], posting=Posting(key=row["id"], ats="eval", board="eval", company="",
+                                                         title=row["title"], location=row["location"], url="",
+                                                         description=row["description"]), labels=labels)
 
 
 def run_eval(items: list[LabelledPosting], config: Config) -> EvalReport:
@@ -67,17 +86,18 @@ def run_eval(items: list[LabelledPosting], config: Config) -> EvalReport:
     attempts = tag.tag_all([i.posting for i in items], defs, config.model, config.api_key)
     predictions = {key: a.results for key, a in attempts.items() if a.results is not None}
     _save(config.home, items, attempts)
-    return score(items, predictions, cost=sum(a.cost for a in attempts.values()))
+    return score(items, predictions, usage=sum((a.usage for a in attempts.values()), tag.Usage()),
+                 unreasoned=sum(1 for a in attempts.values() if a.results and not a.usage.reasoning_tokens))
 
 
-def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.TagResult]], cost: float = 0.0,
-          ) -> EvalReport:
+def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.TagResult]],
+          usage: tag.Usage = tag.Usage(), unreasoned: int = 0) -> EvalReport:
     scores = [_score_tag(name, is_minority, items, predictions) for name, is_minority in MINORITY.items()]
     quotes = [r for results in predictions.values() for r in results.values() if r.quote is not None]
     quote_rate = sum(r.verified for r in quotes) / len(quotes) if quotes else None
     passed = all(s.clears for s in scores) and quote_rate is not None and quote_rate >= BAR_QUOTES
     return EvalReport(postings=len(items), tagged=len(predictions), scores=scores, quotes=len(quotes),
-                      quote_rate=quote_rate, cost=cost, passed=passed)
+                      quote_rate=quote_rate, usage=usage, unreasoned=unreasoned, passed=passed)
 
 
 def _score_tag(name, is_minority, items, predictions) -> TagScore:
@@ -110,12 +130,12 @@ def _same(name: str, truth: str, pred: str | None) -> bool:
 def _save(home: Path, items: list[LabelledPosting], attempts: dict[str, tag.TagAttempt]) -> None:
     directory = home / "eval"
     directory.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    with (directory / f"{stamp}.jsonl").open("w") as f:
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
+    with (directory / f"{stamp}.jsonl").open("x") as f:
         for item in items:
             attempt = attempts.get(item.id)
             row = {"id": item.id, "labels": item.labels, "error": attempt.error if attempt else "not started",
-                   "cost": attempt.cost if attempt else 0.0,
+                   "usage": asdict(attempt.usage) if attempt else None,
                    "tags": {k: asdict(v) for k, v in attempt.results.items()} if attempt and attempt.results else None}
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
@@ -124,7 +144,10 @@ def format_report(report: EvalReport) -> str:
     def pct(x):
         return "n/a" if x is None else f"{x:.1%}"
 
-    lines = [f"postings {report.postings} · tagged {report.tagged} · cost ${report.cost:.4f}"]
+    u = report.usage
+    lines = [f"postings {report.postings} · tagged {report.tagged} · cost ${u.cost:.4f}"
+             f"{'' if u.cost_reported else ' (incomplete: some replies reported no cost)'} · reasoning tokens "
+             f"{u.reasoning_tokens:,} ({report.unreasoned} tagged postings without reasoning)"]
     for s in report.scores:
         lines.append(f"{s.tag:18} acc {pct(s.accuracy)} (n={s.labelled}, predicted {s.predicted}) · minority recall "
                      f"{pct(s.recall)} of {s.minority} · precision {pct(s.precision)}  {'✓' if s.clears else '✗'}")

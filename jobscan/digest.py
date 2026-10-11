@@ -4,6 +4,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from jobscan.fetch import ADAPTERS
 from jobscan.store import StoredPosting
 from jobscan.tag import TagResult
 
@@ -23,7 +24,7 @@ def render(profile: str, date: str, entries: list[DigestEntry], carried_over: in
         p = entry.posting.posting
         blocks.append("\n".join([
             f"## {p.company} — {p.title} · {p.location or 'location not given'}",
-            f"{p.url} · Ashby · first seen {entry.posting.first_seen[:10]}",
+            f"{p.url} · {ADAPTERS[p.ats].DISPLAY_NAME} · first seen {entry.posting.first_seen[:10]}",
             *(_tag_line(name, result) for name, result in entry.tags.items()),
         ]))
     return "\n\n".join(blocks) + "\n"

@@ -6,12 +6,12 @@ from unittest import mock
 
 from jobscan import store, tag
 from jobscan.config import ConfigError, ModelConfig
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 from tests.fakes import FakeServer, model_reply
 
 ALL = ("founding", "location_eligible", "segment", "language_required", "tech_company")
 DEFS = tag.definitions(ALL, "the UK")
-POSTING = Posting(key="ashby:acme:1", board="acme", company="Acme", title="Founding Account Executive",
+POSTING = Posting(key="ashby:acme:1", ats="ashby", board="ashby:acme", company="Acme", title="Founding Account Executive",
                   location="London", url="https://jobs.ashbyhq.com/acme/1",
                   description="You’ll be our first sales hire —  selling to mid-market teams.")
 
@@ -32,6 +32,9 @@ class QuoteTest(unittest.TestCase):
     def test_fabricated_and_blank_quotes_fail(self):
         self.assertFalse(tag.verify_quote("you will be the first seller", POSTING))
         self.assertFalse(tag.verify_quote("   ", POSTING))
+
+    def test_quote_spanning_two_fields_fails(self):
+        self.assertFalse(tag.verify_quote("Founding Account Executive London", POSTING))
 
 
 class ParseReplyTest(unittest.TestCase):
@@ -68,7 +71,13 @@ class ParseReplyTest(unittest.TestCase):
         self.assertEqual((r.value, r.warn), ("German", True))
 
     def test_invalid_replies_raise(self):
+        missing_quote = json.loads(reply())
+        del missing_quote["founding"]["quote"]
+        extra_field = json.loads(reply())
+        extra_field["founding"]["note"] = "x"
+        extra_tag = {**json.loads(reply()), "climate": {"value": "yes", "quote": None}}
         for content in ["not json", "[]", json.dumps({"founding": {"value": "yes", "quote": None}}),
+                        json.dumps(missing_quote), json.dumps(extra_field), json.dumps(extra_tag),
                         reply(founding={"value": "maybe", "quote": None}),
                         reply(segment={"value": "enterprise", "quote": None}),
                         reply(segment={"value": ["huge"], "quote": None}),
@@ -84,6 +93,12 @@ class DefinitionsTest(unittest.TestCase):
         (de,) = tag.definitions(("location_eligible",), "Germany")
         self.assertIn("work from the UK", uk.definition)
         self.assertNotEqual(uk.hash, de.hash)
+
+    def test_hash_covers_every_behaviour_field(self):
+        (founding,) = tag.definitions(("founding",), "the UK")
+        changed = [tag.TagDef(**{**vars(founding), field: value}) for field, value in
+                   [("definition", "x"), ("values", ("yes",)), ("multi", True), ("default", None)]]
+        self.assertEqual(len({founding.hash, *(d.hash for d in changed)}), 5)
 
     def test_unknown_tag_is_a_config_error(self):
         with self.assertRaises(ConfigError):
@@ -133,7 +148,15 @@ class TagPostingTest(unittest.TestCase):
         self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
         attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
         self.assertIsNotNone(attempt.results)
-        self.assertAlmostEqual(attempt.cost, 0.003)
+        self.assertAlmostEqual(attempt.usage.cost, 0.003)
+        self.assertTrue(attempt.usage.cost_reported)
+
+    def test_reasoning_tokens_and_missing_cost_are_recorded(self):
+        status, body = model_reply(json.loads(reply()))
+        body["usage"] = {"completion_tokens_details": {"reasoning_tokens": 812}}
+        self.server.routes["/chat/completions"] = (200, lambda payload: (status, body))
+        usage = tag.tag_posting(POSTING, DEFS, self.model, None).usage
+        self.assertEqual((usage.reasoning_tokens, usage.cost, usage.cost_reported), (812, 0.0, False))
 
     def test_request_pins_provider_and_strict_schema(self):
         self.server.routes["/chat/completions"] = (200, lambda payload: model_reply(json.loads(reply())))
@@ -148,8 +171,17 @@ class TagPostingTest(unittest.TestCase):
     def test_unavailable_model_fails_after_three_tries(self):
         self.server.routes["/chat/completions"] = (503, {"error": "down"})
         attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
-        self.assertEqual((attempt.results, attempt.error, attempt.cost), (None, "HTTP 503", 0.0))
+        self.assertEqual((attempt.results, attempt.error, attempt.usage.cost), (None, "HTTP 503", 0.0))
         self.assertEqual(len(self.server.requests), 3)
+
+    def test_three_consecutive_failures_stop_unstarted_postings(self):
+        self.server.routes["/chat/completions"] = (503, {"error": "down"})
+        postings = [Posting(**{**vars(POSTING), "key": f"ashby:acme:{n}"}) for n in range(5)]
+        with mock.patch.object(tag, "WORKERS", 1):
+            attempts = tag.tag_all(postings, DEFS, self.model, None)
+        # The breaker trips in completion order, so with one worker the next posting may already have started.
+        self.assertIn(len(attempts), (3, 4))
+        self.assertEqual(len(self.server.requests), len(attempts) * tag.TRIES)
 
 
 if __name__ == "__main__":

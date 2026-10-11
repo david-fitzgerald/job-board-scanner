@@ -8,13 +8,14 @@ from pathlib import Path
 from unittest import mock
 
 from jobscan import cli, evaluate, tag
-from jobscan.fetch import Posting
+from jobscan.records import Posting
 from tests.fakes import FakeServer, model_reply
 
 
 def item(id_, **labels):
-    return evaluate.LabelledPosting(id=id_, posting=Posting(id_, "eval", "", "AE", "London", "", "text"),
-                                    labels=labels)
+    return evaluate.LabelledPosting(id=id_, posting=Posting(key=id_, ats="eval", board="eval", company="",
+                                                            title="AE", location="London", url="",
+                                                            description="text"), labels=labels)
 
 
 def result(value, quote=None, verified=False):
@@ -88,14 +89,20 @@ class EvalCommandTest(unittest.TestCase):
         self.assertIn("G2 bar: FAIL", out.getvalue())  # language_required has no minority answer in a 1-posting set
         self.assertEqual(len(list((home / "eval").glob("*.jsonl"))), 1)
 
-    def test_malformed_set_is_a_usage_error(self):
+    def test_malformed_set_is_a_usage_error_before_any_model_call(self):
+        model = FakeServer()
+        self.addCleanup(model.close)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         home = Path(tmp.name)
-        (home / "config.toml").write_text('boards_file = "b.json"\n[model]\nbase_url = "http://x"\nslug = "t/m"\n')
-        (home / "set.json").write_text('[{"id": "P1"}]')
-        with mock.patch.dict(os.environ, {"JOBSCAN_HOME": str(home)}), contextlib.redirect_stderr(io.StringIO()):
-            self.assertEqual(cli.main(["eval", str(home / "set.json")]), 2)
+        (home / "config.toml").write_text(f'boards_file = "b.json"\n[model]\nbase_url = "{model.url}"\nslug = "t/m"\n')
+        good = {"id": "P1", "title": "AE", "location": "London", "description": "d", "labels": {"founding": "no"}}
+        for bad in [{"id": "P1"}, {**good, "title": None}, {**good, "labels": {"founding": "maybe"}},
+                    {**good, "labels": {"language_required": 3}}, {**good, "labels": []}]:
+            (home / "set.json").write_text(json.dumps([good, bad]))
+            with mock.patch.dict(os.environ, {"JOBSCAN_HOME": str(home)}), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(cli.main(["eval", str(home / "set.json")]), 2, bad)
+        self.assertEqual(model.requests, [])
 
 
 if __name__ == "__main__":
