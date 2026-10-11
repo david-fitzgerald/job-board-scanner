@@ -14,9 +14,14 @@ API = "https://api.ashbyhq.com/posting-api/job-board/"
 
 
 def board(company: str, board_url: str) -> Board | None:
-    """A Board for either URL form the map stores: the human board URL (jobs.ashbyhq.com/<slug>) or the API URL,
-    which is used as-is on any host (how tests point at a fake server). None when the URL isn't Ashby's."""
-    parsed = urlparse(board_url)
+    """A Board for either URL form the map stores: the human board URL (jobs.ashbyhq.com/<slug>) or a posting-API
+    URL on any host (how tests point at a fake server), normalised to scheme://host/posting-api/job-board/<slug>.
+    None when the URL isn't recognisably Ashby's."""
+    try:
+        parsed = urlparse(board_url)
+        parsed.port  # raises on a malformed port
+    except ValueError:
+        return None
     path = [p for p in parsed.path.split("/") if p]
     if path[:2] == ["posting-api", "job-board"] and len(path) > 2:
         api_url = f"{parsed.scheme}://{parsed.netloc}/posting-api/job-board/{path[2]}"
@@ -38,11 +43,15 @@ def parse(board: Board, data) -> tuple[Posting, ...]:
 def _posting(board: Board, index: int, job) -> Posting | None:
     if not isinstance(job, dict):
         raise BoardError(f"job {index} is not an object")
-    if job.get("isListed") is False:
+    listed = job.get("isListed", True)
+    if not isinstance(listed, bool):
+        raise BoardError(f"job {index}: `isListed` is not a boolean")
+    if not listed:
         return None
     job_id = _field(job, "id", index, required=True)
     title = _field(job, "title", index, required=True)
-    secondary = job.get("secondaryLocations") or []
+    secondary = job.get("secondaryLocations")
+    secondary = [] if secondary is None else secondary
     if not isinstance(secondary, list) or not all(isinstance(s, dict) for s in secondary):
         raise BoardError(f"job {index}: `secondaryLocations` is not a list of objects")
     locations = [_field(job, "location", index)] + [_field(s, "location", index) for s in secondary]

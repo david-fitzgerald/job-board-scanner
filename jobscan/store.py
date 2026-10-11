@@ -5,6 +5,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from jobscan.config import ConfigError
 from jobscan.records import Posting
 from jobscan.tag import TagDef, TagResult
 
@@ -25,7 +26,8 @@ CREATE TABLE IF NOT EXISTS deliveries (
 );
 CREATE TABLE IF NOT EXISTS runs (
     started TEXT NOT NULL, finished TEXT NOT NULL, boards_read INTEGER NOT NULL, boards_failed INTEGER NOT NULL,
-    new INTEGER NOT NULL, tagged INTEGER NOT NULL, carried_over INTEGER NOT NULL, cost REAL NOT NULL
+    new INTEGER NOT NULL, tagged INTEGER NOT NULL, carried_over INTEGER NOT NULL, cost REAL NOT NULL,
+    cost_complete INTEGER NOT NULL  -- 0 when some model reply reported no cost: `cost` is then a lower bound
 );
 """
 
@@ -47,12 +49,22 @@ class RunRecord:
     tagged: int
     carried_over: int
     cost: float
+    cost_complete: bool
 
 
 def open_db(home: Path) -> sqlite3.Connection:
-    conn = sqlite3.connect(home / "jobscan.sqlite")
-    conn.row_factory = sqlite3.Row
-    conn.executescript(SCHEMA)
+    """Opens (creating if needed) the install's database; a file that can't be opened is a setup error."""
+    path = home / "jobscan.sqlite"
+    try:
+        conn = sqlite3.connect(path)
+    except sqlite3.Error as e:
+        raise ConfigError(f"{path}: cannot open database ({type(e).__name__})") from None
+    try:
+        conn.row_factory = sqlite3.Row
+        conn.executescript(SCHEMA)
+    except sqlite3.Error as e:
+        conn.close()
+        raise ConfigError(f"{path}: cannot open database ({type(e).__name__}: {e})") from None
     return conn
 
 
@@ -135,7 +147,9 @@ def deliver(conn: sqlite3.Connection, profile: str, posting_keys: list[str], dig
 def record_run(conn: sqlite3.Connection, run: RunRecord) -> None:
     with conn:
         conn.execute(
-            """INSERT INTO runs (started, finished, boards_read, boards_failed, new, tagged, carried_over, cost)
-               VALUES (:started, :finished, :boards_read, :boards_failed, :new, :tagged, :carried_over, :cost)""",
+            """INSERT INTO runs (started, finished, boards_read, boards_failed, new, tagged, carried_over, cost,
+                                cost_complete)
+               VALUES (:started, :finished, :boards_read, :boards_failed, :new, :tagged, :carried_over, :cost,
+                       :cost_complete)""",
             vars(run),
         )

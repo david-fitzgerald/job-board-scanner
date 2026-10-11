@@ -59,7 +59,8 @@ evidence = [quote for results in calls.values() if any(h == founding_hash for h,
             for _, quote, verified in results if verified and quote and quote.strip()]
 assert evidence, "no delivered posting has a model-sourced founding value plus a verified quote from the same reply"
 assert any(f'"{quote}"' in digest for quote in evidence), "verified quote missing from the rendered digest"
-(cost,) = db.execute("SELECT sum(cost) FROM runs").fetchone()
-assert 0 < cost < 0.01, f"recorded cost ${cost:.4f} is not in (0, $0.01): zero means no billing evidence"
+cost, complete = db.execute("SELECT sum(cost), min(cost_complete) FROM runs").fetchone()
+assert complete == 1, "some model reply reported no cost: the recorded total is only a lower bound"
+assert 0 < cost < 0.01, f"recorded cost ${cost:.4f} is not in (0, $0.01)"
 print(f"PASS: {new} postings tagged and delivered, second run empty, cost ${cost:.4f}")
 PY

@@ -30,11 +30,12 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
     try:
         boards_read, boards_failed = _fetch(conn, config, started)
         matched = [p for p in store.pending(conn, profile.name) if prefilter.matches(p.posting, profile)]
-        entries, tagged, cost = _tag(conn, matched, defs, config)
+        entries, tagged, usage = _tag(conn, matched, defs, config)
         outcome = _digest(conn, config, profile, entries, carried_over=len(matched) - len(entries))
         store.record_run(conn, store.RunRecord(
             started=started, finished=_now(), boards_read=boards_read, boards_failed=boards_failed,
-            new=outcome.new, tagged=tagged, carried_over=outcome.carried_over, cost=cost))
+            new=outcome.new, tagged=tagged, carried_over=outcome.carried_over, cost=usage.cost,
+            cost_complete=usage.cost_reported))
         return outcome
     finally:
         conn.close()
@@ -42,7 +43,7 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
 
 def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int]:
     boards, skipped = fetch.load_boards(config.boards_file)
-    log.info("fetch_start boards=%d skipped_not_ashby=%d", len(boards), skipped)
+    log.info("fetch_start boards=%d skipped_unrecognised=%d", len(boards), skipped)
     fetched, failed = fetch.fetch_all(boards)
     for result in fetched:
         store.apply_fetch(conn, result.board.id, result.postings, now)
@@ -55,7 +56,7 @@ def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int
 
 
 def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: list[tag.TagDef], config: Config,
-         ) -> tuple[list[digest.DigestEntry], int, float]:
+         ) -> tuple[list[digest.DigestEntry], int, tag.Usage]:
     """Digest entries for every matched posting with a full set of tag results (cached or fresh),
     plus the count tagged this run and its cost. Postings left untagged are simply not in the entries."""
     model_id = config.model.id
@@ -67,23 +68,22 @@ def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: lis
         attempt = attempts.get(s.posting.key)
         if attempt is None:
             continue
-        if attempt.results is None:
-            # Auth failures need the operator; anything else may clear by the next run.
-            level = logging.ERROR if attempt.error in ("HTTP 401", "HTTP 402", "HTTP 403") else logging.WARNING
+        if isinstance(attempt, tag.TagFailure):
+            # Auth and billing failures need the operator; anything else may clear by the next run.
+            level = logging.ERROR if attempt.http_status in (401, 402, 403) else logging.WARNING
             log.log(level, "tag_failed posting=%s error=%r", s.posting.key, attempt.error)
             continue
         store.save_results(conn, s, defs, model_id, attempt.results)
         results[s.posting.key] = attempt.results
-    tagged = sum(1 for a in attempts.values() if a.results is not None)
+    tagged = sum(1 for a in attempts.values() if isinstance(a, tag.TagSuccess))
     usage = sum((a.usage for a in attempts.values()), tag.Usage())
-    cost = usage.cost
     if len(attempts) < len(needed):
         log.error("tag_stopped reason=consecutive_failures not_started=%d", len(needed) - len(attempts))
     log.info("tag_done tagged=%d failed=%d cost=%.4f cost_reported=%s reasoning_tokens=%d", tagged,
-             len(attempts) - tagged, cost, usage.cost_reported, usage.reasoning_tokens)
+             len(attempts) - tagged, usage.cost, usage.cost_reported, usage.reasoning_tokens)
     entries = [digest.DigestEntry(posting=s, tags={d.name: results[s.posting.key][d.name] for d in defs})
                for s in matched if len(results[s.posting.key]) == len(defs)]
-    return entries, tagged, cost
+    return entries, tagged, usage
 
 
 def _digest(conn: sqlite3.Connection, config: Config, profile: Profile, entries: list[digest.DigestEntry],

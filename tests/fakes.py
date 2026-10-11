@@ -28,6 +28,8 @@ class FakeServer:
                     status, body = body(payload)
                 raw = body.encode() if isinstance(body, str) else json.dumps(body).encode()
                 self.send_response(status)
+                for name, value in getattr(server, "extra_headers", {}).items():
+                    self.send_header(name, value)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(raw)))
                 self.end_headers()

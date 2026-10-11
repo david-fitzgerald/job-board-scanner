@@ -4,6 +4,7 @@ Shared by `run` and `eval`, so eval measures exactly the production path."""
 import hashlib
 import http.client
 import json
+import math
 import re
 import threading
 import time
@@ -61,11 +62,19 @@ class Usage:
 
 
 @dataclass(frozen=True)
-class TagAttempt:
-    """One posting's tagging outcome: `results` on success, `error` otherwise; usage either way."""
-    results: dict[str, TagResult] | None
+class TagSuccess:
+    results: dict[str, TagResult]
     usage: Usage
-    error: str | None
+
+
+@dataclass(frozen=True)
+class TagFailure:
+    error: str  # safe to log: an HTTP status, an exception class or a reply-shape problem, never request text
+    http_status: int | None
+    usage: Usage
+
+
+TagAttempt = TagSuccess | TagFailure
 
 
 @dataclass(frozen=True)
@@ -149,28 +158,38 @@ def schema(defs: list[TagDef]) -> dict:
 
 
 def tag_posting(posting: Posting, defs: list[TagDef], model: ModelConfig, api_key: str | None) -> TagAttempt:
-    usage, error = Usage(), None
+    usage, error, status = Usage(), "", None
     for attempt in range(TRIES):
         if attempt:
-            time.sleep(RATE_LIMIT_PAUSE if error == "HTTP 429" else PAUSE)
+            time.sleep(RATE_LIMIT_PAUSE if status == 429 else PAUSE)
         try:
             reply = _call(model, api_key, prompt(posting, defs), schema(defs))
         except urllib.error.HTTPError as e:
             e.close()
-            error = f"HTTP {e.code}"
+            error, status = f"HTTP {e.code}", e.code
             continue
         # Exception classes only, never their text: request errors can echo headers, and the key is one.
         except (OSError, http.client.HTTPException, ValueError) as e:
-            error = type(e).__name__
+            error, status = type(e).__name__, None
             continue
         usage += reply.usage
         try:
             if reply.content is None:
                 raise ReplyError("no message content")
-            return TagAttempt(results=parse_reply(reply.content, defs, posting), usage=usage, error=None)
+            return TagSuccess(results=parse_reply(reply.content, defs, posting), usage=usage)
         except ReplyError as e:
-            error = f"invalid reply: {e}"
-    return TagAttempt(results=None, usage=usage, error=error)
+            error, status = f"invalid reply: {e}", None
+    return TagFailure(error=error, http_status=status, usage=usage)
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """A redirect would carry the Authorization header to wherever it points; fail instead (as an HTTPError)."""
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
 
 
 def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: dict) -> _Reply:
@@ -185,22 +204,26 @@ def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: d
     headers = {"Content-Type": "application/json", **({"Authorization": f"Bearer {api_key}"} if api_key else {})}
     request = urllib.request.Request(f"{model.base_url}/chat/completions", data=json.dumps(body).encode(),
                                      headers=headers)
-    with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
-        reply = json.load(response)
-    if not isinstance(reply, dict):
+    with _OPENER.open(request, timeout=TIMEOUT) as response:
+        raw = response.read()
+    try:
+        reply = json.loads(raw)
+    except ValueError:
+        reply = None
+    if not isinstance(reply, dict):  # answered, possibly billed, but nothing readable: billing unknown
         return _Reply(content=None, usage=Usage(cost_reported=False))
     usage = reply.get("usage") if isinstance(reply.get("usage"), dict) else {}
-    cost = usage.get("cost")
     details = usage.get("completion_tokens_details") if isinstance(usage.get("completion_tokens_details"), dict) else {}
-    reasoning = details.get("reasoning_tokens")
+    cost, reasoning = usage.get("cost"), details.get("reasoning_tokens")
+    cost_ok = isinstance(cost, (int, float)) and not isinstance(cost, bool) and math.isfinite(cost) and cost >= 0
+    reasoning_ok = isinstance(reasoning, int) and not isinstance(reasoning, bool) and reasoning >= 0
     choices = reply.get("choices")
     message = choices[0].get("message") if isinstance(choices, list) and choices and isinstance(choices[0], dict) \
         else None
     content = message.get("content") if isinstance(message, dict) else None
     return _Reply(content=content if isinstance(content, str) else None,
-                  usage=Usage(cost=float(cost) if isinstance(cost, (int, float)) else 0.0,
-                              cost_reported=isinstance(cost, (int, float)),
-                              reasoning_tokens=reasoning if isinstance(reasoning, int) else 0))
+                  usage=Usage(cost=float(cost) if cost_ok else 0.0, cost_reported=cost_ok,
+                              reasoning_tokens=reasoning if reasoning_ok else 0))
 
 
 def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str, TagResult]:
@@ -266,7 +289,7 @@ def tag_all(postings: list[Posting], defs: list[TagDef], model: ModelConfig, api
     completion order) no further postings start; in-flight results are kept. Unstarted postings are absent."""
     stop = threading.Event()
 
-    def work(posting: Posting) -> TagAttempt | None:
+    def work(posting: Posting) -> TagAttempt | None:  # None: not started because the breaker tripped
         return None if stop.is_set() else tag_posting(posting, defs, model, api_key)
 
     attempts, consecutive_failures = {}, 0
@@ -277,7 +300,7 @@ def tag_all(postings: list[Posting], defs: list[TagDef], model: ModelConfig, api
             if attempt is None:
                 continue
             attempts[futures[future]] = attempt
-            consecutive_failures = 0 if attempt.results else consecutive_failures + 1
+            consecutive_failures = 0 if isinstance(attempt, TagSuccess) else consecutive_failures + 1
             if consecutive_failures >= STOP_AFTER_FAILURES:
                 stop.set()
     return attempts

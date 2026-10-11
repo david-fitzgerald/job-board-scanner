@@ -39,6 +39,12 @@ class ApplyFetchTest(unittest.TestCase):
         store.apply_fetch(self.conn, "ashby:acme", (posting("1"),), "2026-10-11T09:00:00.000000+00:00")
         self.assertEqual(self.closed(), {"ashby:acme:1": 0, "ashby:acme:2": 1})
 
+    def test_unopenable_database_is_a_config_error(self):
+        with tempfile.TemporaryDirectory() as d:
+            (Path(d) / "jobscan.sqlite").mkdir()
+            with self.assertRaises(store.ConfigError):
+                store.open_db(Path(d))
+
     def test_first_seen_survives_updates_and_input_hash_tracks_location(self):
         store.apply_fetch(self.conn, "ashby:acme", (posting("1"),), "2026-10-11T10:00:00.000000+00:00")
         moved = Posting(**{**vars(posting("1")), "location": "Remote - UK"})

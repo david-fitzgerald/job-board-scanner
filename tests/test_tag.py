@@ -147,9 +147,39 @@ class TagPostingTest(unittest.TestCase):
                         model_reply(json.loads(reply()), cost=0.002)])
         self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
         attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
-        self.assertIsNotNone(attempt.results)
+        self.assertIsInstance(attempt, tag.TagSuccess)
         self.assertAlmostEqual(attempt.usage.cost, 0.003)
         self.assertTrue(attempt.usage.cost_reported)
+
+    def test_invalid_usage_values_count_as_unreported(self):
+        for cost, reasoning in [(float("nan"), True), (True, -3), (-0.5, 1.5), ("0.001", None)]:
+            status, body = model_reply(json.loads(reply()))
+            body["usage"] = {"cost": cost, "completion_tokens_details": {"reasoning_tokens": reasoning}}
+            self.server.routes["/chat/completions"] = (200, lambda payload, body=body: (status, body))
+            usage = tag.tag_posting(POSTING, DEFS, self.model, None).usage
+            self.assertEqual((usage.cost, usage.cost_reported, usage.reasoning_tokens), (0.0, False, 0), cost)
+
+    def test_unreadable_200_reply_marks_billing_unknown(self):
+        replies = iter([(200, "{garbage"), model_reply(json.loads(reply()), cost=0.002)])
+        self.server.routes["/chat/completions"] = (200, lambda payload: next(replies))
+        attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
+        self.assertIsInstance(attempt, tag.TagSuccess)
+        self.assertEqual((attempt.usage.cost, attempt.usage.cost_reported), (0.002, False))
+
+    def test_redirects_are_not_followed(self):
+        elsewhere = FakeServer()
+        self.addCleanup(elsewhere.close)
+        elsewhere.routes["/chat/completions"] = (200, lambda payload: model_reply(json.loads(reply())))
+
+        def redirect(payload):
+            return 302, {"moved": True}
+
+        self.server.routes["/chat/completions"] = (302, redirect)
+        with mock.patch("tests.fakes.FakeServer.extra_headers", {"Location": f"{elsewhere.url}/chat/completions"},
+                        create=True):
+            attempt = tag.tag_posting(POSTING, DEFS, self.model, "sk-or-v1-secret")
+        self.assertEqual((type(attempt), attempt.http_status), (tag.TagFailure, 302))
+        self.assertEqual(elsewhere.requests, [])
 
     def test_reasoning_tokens_and_missing_cost_are_recorded(self):
         status, body = model_reply(json.loads(reply()))
@@ -171,7 +201,7 @@ class TagPostingTest(unittest.TestCase):
     def test_unavailable_model_fails_after_three_tries(self):
         self.server.routes["/chat/completions"] = (503, {"error": "down"})
         attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
-        self.assertEqual((attempt.results, attempt.error, attempt.usage.cost), (None, "HTTP 503", 0.0))
+        self.assertEqual(attempt, tag.TagFailure(error="HTTP 503", http_status=503, usage=tag.Usage()))
         self.assertEqual(len(self.server.requests), 3)
 
     def test_three_consecutive_failures_stop_unstarted_postings(self):

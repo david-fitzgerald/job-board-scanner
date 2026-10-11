@@ -11,8 +11,6 @@ from jobscan.records import Posting
 ELIGIBLE_WHERE = "the UK"  # the G2 set's labels answer UK eligibility
 MINORITY = {"founding": lambda v: v == "yes", "location_eligible": lambda v: v == "no",
             "language_required": lambda v: v != "no"}  # the gate tags and their minority answer
-LABEL_VALUES = {"founding": {"yes", "no"}, "location_eligible": {"yes", "no", "unknown"},
-                "language_required": None}  # None: free text ("no" or a language)
 BAR_ACCURACY, BAR_RECALL, BAR_QUOTES = 0.90, 0.80, 0.95
 
 
@@ -67,13 +65,13 @@ def _labelled(path: Path, n: int, row) -> LabelledPosting:
             or not isinstance(row.get("labels"), dict):
         raise ConfigError(f"{path}: row {n} needs string {', '.join(fields)} and a `labels` object")
     labels = {}
-    for name, allowed in LABEL_VALUES.items():
-        if name not in row["labels"]:
+    for d in tag.definitions(tuple(MINORITY), ELIGIBLE_WHERE):
+        if d.name not in row["labels"]:
             continue
-        value = row["labels"][name]
-        if not isinstance(value, str) or not value.strip() or (allowed and value.lower() not in allowed):
-            raise ConfigError(f"{path}: row {n}: label `{name}` = {value!r} is not allowed")
-        labels[name] = value.strip().lower()
+        value = row["labels"][d.name]
+        if not isinstance(value, str) or not value.strip() or (d.values and value.lower() not in d.values):
+            raise ConfigError(f"{path}: row {n}: label `{d.name}` = {value!r} is not allowed")
+        labels[d.name] = value.strip().lower()
     return LabelledPosting(id=row["id"], posting=Posting(key=row["id"], ats="eval", board="eval", company="",
                                                          title=row["title"], location=row["location"], url="",
                                                          description=row["description"]), labels=labels)
@@ -84,10 +82,11 @@ def run_eval(items: list[LabelledPosting], config: Config) -> EvalReport:
     and keeps the raw predictions under $JOBSCAN_HOME/eval/ for inspection."""
     defs = tag.definitions(tag.builtin_names(), ELIGIBLE_WHERE)
     attempts = tag.tag_all([i.posting for i in items], defs, config.model, config.api_key)
-    predictions = {key: a.results for key, a in attempts.items() if a.results is not None}
+    predictions = {key: a.results for key, a in attempts.items() if isinstance(a, tag.TagSuccess)}
     _save(config.home, items, attempts)
     return score(items, predictions, usage=sum((a.usage for a in attempts.values()), tag.Usage()),
-                 unreasoned=sum(1 for a in attempts.values() if a.results and not a.usage.reasoning_tokens))
+                 unreasoned=sum(1 for a in attempts.values()
+                                if isinstance(a, tag.TagSuccess) and not a.usage.reasoning_tokens))
 
 
 def score(items: list[LabelledPosting], predictions: dict[str, dict[str, tag.TagResult]],
@@ -113,10 +112,9 @@ def _score_tag(name, is_minority, items, predictions) -> TagScore:
 
 
 def _predicted(results: dict[str, tag.TagResult] | None, name: str) -> str | None:
-    """A missing prediction is None, which never matches a label."""
-    if results is None or name not in results:
-        return None
-    return str(results[name].value).lower()
+    """The gate tags are single-valued; a missing prediction is None, which never matches a label."""
+    value = results[name].value if results is not None and name in results else None
+    return value.lower() if isinstance(value, str) else None
 
 
 def _same(name: str, truth: str, pred: str | None) -> bool:
@@ -134,9 +132,11 @@ def _save(home: Path, items: list[LabelledPosting], attempts: dict[str, tag.TagA
     with (directory / f"{stamp}.jsonl").open("x") as f:
         for item in items:
             attempt = attempts.get(item.id)
-            row = {"id": item.id, "labels": item.labels, "error": attempt.error if attempt else "not started",
+            row = {"id": item.id, "labels": item.labels,
+                   "error": attempt.error if isinstance(attempt, tag.TagFailure) else None if attempt else "not started",
                    "usage": asdict(attempt.usage) if attempt else None,
-                   "tags": {k: asdict(v) for k, v in attempt.results.items()} if attempt and attempt.results else None}
+                   "tags": {k: asdict(v) for k, v in attempt.results.items()}
+                   if isinstance(attempt, tag.TagSuccess) else None}
             f.write(json.dumps(row, ensure_ascii=False) + "\n")
 
 

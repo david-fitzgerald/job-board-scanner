@@ -19,8 +19,10 @@ class AshbyBoardTest(unittest.TestCase):
         self.assertEqual(ashby.board("Acme", "http://127.0.0.1:9/posting-api/job-board/acme?x=1").api_url,
                          "http://127.0.0.1:9/posting-api/job-board/acme")
 
-    def test_other_ats_is_none(self):
+    def test_other_ats_and_malformed_urls_are_none(self):
         self.assertIsNone(ashby.board("Acme", "https://boards.greenhouse.io/acme"))
+        self.assertIsNone(ashby.board("Acme", "https://[::1/posting-api/job-board/acme"))
+        self.assertIsNone(ashby.board("Acme", "https://jobs.ashbyhq.com:99999/acme"))
 
     def test_load_boards_dedupes_and_counts_skipped(self):
         with tempfile.TemporaryDirectory() as d:
@@ -99,6 +101,8 @@ class FetchBoardTest(unittest.TestCase):
 
     def test_one_malformed_listed_job_fails_the_whole_board(self):
         for bad in [{"title": None}, {"secondaryLocations": 1}, {"secondaryLocations": [1]},
+                    {"secondaryLocations": {}}, {"secondaryLocations": ""}, {"secondaryLocations": False},
+                    {"isListed": "false"}, {"isListed": 0},
                     {"descriptionHtml": {"x": 1}, "descriptionPlain": None}, {"location": 7}, {"id": 12}]:
             self.serve("acme", 200, {"jobs": [ashby_job("1", "AE"), {**ashby_job("2", "AE"), **bad}]})
             reason = self.fetch_one()

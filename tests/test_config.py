@@ -34,8 +34,21 @@ class ConfigTest(unittest.TestCase):
         self.assertNotIn("sk-or", repr(config))
 
     def test_bad_base_url(self):
+        pinned = '\nprovider = "p"\nquantization = "q"\n'
+        for url in ["localhost:11434", "https://[::1", "http://localhost:99999/v1", "http://openrouter.ai/api/v1"]:
+            with self.assertRaises(ConfigError, msg=url):
+                self.load(f'boards_file = "b.json"\n[model]\nbase_url = "{url}"\nslug = "q"' + pinned)
+
+    def test_unreadable_toml_is_a_config_error(self):
+        (self.home / "config.toml").write_bytes(b'boards_file = "\xff"\n')
         with self.assertRaises(ConfigError):
-            self.load('boards_file = "b.json"\n[model]\nbase_url = "localhost:11434"\nslug = "q"\n')
+            load_config(self.home)
+
+    def test_empty_exclusions_allowed(self):
+        (self.home / "profiles").mkdir()
+        (self.home / "profiles" / "ae.toml").write_text('titles = ["AE"]\nexclude_titles = []\nlocations = ["London"]\n'
+                                                        'eligible_where = "the UK"\ntags = ["founding"]\n')
+        self.assertEqual(load_profile(self.home).exclude_titles, ())
 
     def test_duplicate_tags_rejected(self):
         (self.home / "profiles").mkdir()

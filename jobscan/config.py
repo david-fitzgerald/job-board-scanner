@@ -60,12 +60,18 @@ def load_config(home: Path) -> Config:
         provider=_string(model, "provider", path, required=False),
         quantization=_string(model, "quantization", path, required=False),
     )
-    url = urlparse(model_config.base_url)
-    if url.scheme not in ("http", "https") or not url.hostname:
+    try:
+        url = urlparse(model_config.base_url)
+        url.port  # raises on a malformed port
+    except ValueError:
+        url = None
+    if url is None or url.scheme not in ("http", "https") or not url.hostname:
         raise ConfigError(f"{path}: `model.base_url` must be an http(s) URL")
     # The OpenRouter key goes to OpenRouter only, never to another configured endpoint.
     api_key = None
     if url.hostname == "openrouter.ai":
+        if url.scheme != "https":
+            raise ConfigError(f"{path}: OpenRouter must be reached over https")
         if not (model_config.provider and model_config.quantization):
             raise ConfigError(f"{path}: OpenRouter needs `model.provider` and `model.quantization` pinned")
         api_key = os.environ.get("OPENROUTER_API_KEY") or None
@@ -100,7 +106,7 @@ def _read_toml(path: Path) -> dict:
             return tomllib.load(f)
     except FileNotFoundError:
         raise ConfigError(f"{path}: not found") from None
-    except OSError as e:
+    except (OSError, UnicodeDecodeError) as e:
         raise ConfigError(f"{path}: not readable ({type(e).__name__})") from None
     except tomllib.TOMLDecodeError as e:
         raise ConfigError(f"{path}: {e}") from None
@@ -119,8 +125,9 @@ def _strings(data: dict, key: str, path: Path, required: bool = True) -> tuple[s
     value = data.get(key)
     if value is None and not required:
         return ()
-    if not isinstance(value, list) or not value or not all(isinstance(v, str) and v.strip() for v in value):
-        raise ConfigError(f"{path}: `{key}` must be a non-empty list of strings")
+    if not isinstance(value, list) or (required and not value) \
+            or not all(isinstance(v, str) and v.strip() for v in value):
+        raise ConfigError(f"{path}: `{key}` must be a {'non-empty ' if required else ''}list of strings")
     return tuple(value)
 
 
