@@ -127,8 +127,8 @@ def _block_urls(indexes: str, block: tuple[str, int, int], prefix: bytes) -> lis
             record = json.loads(line.split(b" ", 2)[2])
         except (IndexError, ValueError, RecursionError):
             raise CrawlError(f"{name}@{offset}: malformed CDX line {line[:80]!r}") from None
-        if not isinstance(record, dict) or not isinstance(record.get("url"), str):
-            raise CrawlError(f"{name}@{offset}: CDX record without a url")
+        if not isinstance(record, dict) or not all(isinstance(record.get(k), str) for k in ("url", "status", "mime")):
+            raise CrawlError(f"{name}@{offset}: CDX record without a string url, status and mime")
         if record.get("status") == "200" and record.get("mime") == "text/html":
             urls.append(record["url"])
     return urls

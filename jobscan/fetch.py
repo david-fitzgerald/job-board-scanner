@@ -62,16 +62,18 @@ def load_boards(path: Path) -> tuple[list[Board], int]:
 
 
 def fetch_each(boards: list[Board]) -> Iterator[BoardFetch | BoardFailure]:
-    """Every board's outcome as it completes. A board is submitted only as an earlier outcome is consumed, so at
-    most IN_FLIGHT boards' postings are in memory however many boards there are."""
+    """Every board's outcome as it completes. A board is submitted only as an earlier outcome is handed over, so
+    at most IN_FLIGHT boards' postings are held here (plus whatever the caller keeps), however many boards there are."""
     queue = iter(boards)
     with ThreadPoolExecutor(WORKERS) as pool:
         running = {pool.submit(_fetch_isolated, b) for b in itertools.islice(queue, IN_FLIGHT)}
         while running:
             done, running = wait(running, return_when=FIRST_COMPLETED)
-            for future in done:
-                yield future.result()
+            while done:
+                outcome = done.pop().result()  # popped, so the finished future and its postings aren't kept
                 running |= {pool.submit(_fetch_isolated, b) for b in itertools.islice(queue, 1)}
+                yield outcome
+                del outcome
 
 
 def _fetch_isolated(board: Board) -> BoardFetch | BoardFailure:

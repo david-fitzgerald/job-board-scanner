@@ -1,4 +1,5 @@
 import gzip
+import json
 import unittest
 from unittest import mock
 
@@ -118,6 +119,20 @@ class CapturesTest(unittest.TestCase):
             f"com,ashbyhq,jobs)/a/1 20260901000000\tcdx-00000.gz\t0\t{len(block)}\t1\n".encode()
         with self.assertRaisesRegex(CrawlError, "malformed CDX"):
             self.captures()
+
+
+    def test_record_with_a_non_string_field_is_an_error(self):
+        for field, value in [("status", 200), ("mime", None), ("url", ["x"])]:
+            with self.subTest(field=field):
+                good = cdx_line("https://jobs.ashbyhq.com/a/1")
+                bad = cdx_line("https://jobs.ashbyhq.com/b/1")
+                record = json.loads(bad.split(" ", 2)[2])
+                record[field] = value
+                bad = bad.rsplit(" {", 1)[0] + " " + json.dumps(record)
+                self.server.files.clear()
+                self.serve([good, bad])
+                with self.assertRaisesRegex(CrawlError, "string url, status and mime"):
+                    self.captures()
 
 
 class LatestCrawlsTest(unittest.TestCase):

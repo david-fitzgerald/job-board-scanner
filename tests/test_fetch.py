@@ -165,7 +165,7 @@ class FetchBoardTest(unittest.TestCase):
         with mock.patch.object(fetch, "_fetch_isolated", fake_fetch):
             for consumed, _ in enumerate(fetch.fetch_each(boards), start=1):
                 time.sleep(0.001)
-                self.assertLessEqual(len(started), consumed - 1 + fetch.IN_FLIGHT)
+                self.assertLessEqual(len(started) - consumed, fetch.IN_FLIGHT)  # started, not yet handed over
         self.assertEqual(len(started), len(boards))
 
     def test_unreachable_board_is_a_failure(self):
