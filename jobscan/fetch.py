@@ -1,11 +1,14 @@
 """Board fetching: board list → postings per board through the ATS adapter, one board's failure isolated
 from the rest. A board counts as read only on HTTP 200 with a payload its adapter parses completely."""
 import http.client
+import itertools
 import json
+import logging
 import time
 import urllib.error
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Iterator
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -18,7 +21,9 @@ TIMEOUT = 20
 RETRY_PAUSES = (2, 10)  # seconds before the 2nd and 3rd tries
 RETRYABLE = {429, 500, 502, 503, 504}
 WORKERS = 8
+IN_FLIGHT = 2 * WORKERS  # boards fetching or fetched but not yet consumed: bounds postings held in memory
 HEADERS = {"User-Agent": "jobscan (+https://github.com/david-fitzgerald/jobscan)"}
+log = logging.getLogger("jobscan")
 
 
 @dataclass(frozen=True)
@@ -56,25 +61,31 @@ def load_boards(path: Path) -> tuple[list[Board], int]:
     return list(boards.values()), skipped
 
 
-def fetch_all(boards: list[Board]) -> tuple[list[BoardFetch], list[BoardFailure]]:
+def fetch_each(boards: list[Board]) -> Iterator[BoardFetch | BoardFailure]:
+    """Every board's outcome as it completes. A board is submitted only as an earlier outcome is consumed, so at
+    most IN_FLIGHT boards' postings are in memory however many boards there are."""
+    queue = iter(boards)
     with ThreadPoolExecutor(WORKERS) as pool:
-        outcomes = list(pool.map(_fetch_isolated, boards))
-    return ([o for o in outcomes if isinstance(o, BoardFetch)],
-            [o for o in outcomes if isinstance(o, BoardFailure)])
+        running = {pool.submit(_fetch_isolated, b) for b in itertools.islice(queue, IN_FLIGHT)}
+        while running:
+            done, running = wait(running, return_when=FIRST_COMPLETED)
+            for future in done:
+                yield future.result()
+                running |= {pool.submit(_fetch_isolated, b) for b in itertools.islice(queue, 1)}
 
 
 def _fetch_isolated(board: Board) -> BoardFetch | BoardFailure:
     try:
-        return BoardFetch(board, ADAPTERS[board.ats].parse(board, _get_json(board.api_url)))
+        return BoardFetch(board, ADAPTERS[board.ats].parse(board, _get_json(board)))
     # OSError covers URLError, timeouts and resets; ValueError covers bad JSON and bad UTF-8;
     # RecursionError covers deeply nested JSON on Python < 3.14.
     except (OSError, http.client.HTTPException, ValueError, RecursionError, BoardError) as e:
         return BoardFailure(board, _reason(e), e.code if isinstance(e, urllib.error.HTTPError) else None)
 
 
-def _get_json(url: str):
-    request = urllib.request.Request(url, headers=HEADERS)
-    for pause in (*RETRY_PAUSES, None):
+def _get_json(board: Board):
+    request = urllib.request.Request(board.api_url, headers=HEADERS)
+    for attempt, pause in enumerate((*RETRY_PAUSES, None), start=1):
         try:
             with urllib.request.urlopen(request, timeout=TIMEOUT) as response:
                 if response.status != 200:
@@ -82,6 +93,8 @@ def _get_json(url: str):
                 return json.load(response)
         except urllib.error.HTTPError as e:
             e.close()
+            if e.code == 429:  # every one, so rate limiting shows even when a retry then succeeds
+                log.warning("board_429 board=%s attempt=%d", board.id, attempt)
             if e.code not in RETRYABLE or pause is None:
                 raise
         except (OSError, http.client.HTTPException):

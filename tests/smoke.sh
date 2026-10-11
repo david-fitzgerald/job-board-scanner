@@ -23,7 +23,9 @@ from jobscan.config import jobscan_home, load_config, load_profile
 home = jobscan_home()
 config, profile = load_config(home), load_profile(home)
 boards, _skipped = fetch.load_boards(config.boards_file)
-fetched, failed = fetch.fetch_all(boards)
+outcomes = list(fetch.fetch_each(boards))
+fetched = [o for o in outcomes if isinstance(o, fetch.BoardFetch)]
+failed = [o for o in outcomes if isinstance(o, fetch.BoardFailure)]
 matched = [p for r in fetched for p in r.postings if prefilter.matches(p, profile)]
 assert not failed, f"preflight: boards failed {[f.board.slug for f in failed]}"
 assert 1 <= len(matched) <= 3, f"preflight: {len(matched)} postings match; the fixture needs 1-3 (update tests/smoke/)"

@@ -9,7 +9,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from jobscan import cli, fetch, tag
+from jobscan import cli, fetch, store, tag
+from jobscan.records import Board
 from tests.fakes import FakeServer, ashby_job, model_reply, tags_quoting_the_posting
 
 PROFILE = """titles = ["Account Executive"]
@@ -19,7 +20,7 @@ tags = ["founding", "location_eligible", "segment", "language_required", "tech_c
 """
 
 
-class RunTest(unittest.TestCase):
+class RunFixture(unittest.TestCase):
     def setUp(self):
         self.ats, self.model = FakeServer(), FakeServer()
         self.addCleanup(self.ats.close)
@@ -33,8 +34,7 @@ class RunTest(unittest.TestCase):
             {"company": "Acme", "board_url": f"{self.ats.url}/posting-api/job-board/acme"},
             {"company": "Broken", "board_url": f"{self.ats.url}/posting-api/job-board/broken"},
         ]}))
-        (self.home / "config.toml").write_text(
-            f'boards_file = "boards.json"\n[model]\nbase_url = "{self.model.url}"\nslug = "test/model"\n')
+        self.write_config(boards_file=True)
         self.ats.routes["/posting-api/job-board/broken"] = (500, {"error": "boom"})
         self.jobs = [ashby_job("1", "Account Executive"), ashby_job("2", "Enterprise Account Executive"),
                      ashby_job("3", "Account Executive", location="Berlin"), ashby_job("4", "Engineer")]
@@ -49,6 +49,10 @@ class RunTest(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def write_config(self, boards_file):
+        (self.home / "config.toml").write_text(('boards_file = "boards.json"\n' if boards_file else "")
+                                               + f'[model]\nbase_url = "{self.model.url}"\nslug = "test/model"\n')
+
     def model_ok(self):
         self.model.routes["/chat/completions"] = (200, lambda payload: model_reply(tags_quoting_the_posting(payload)))
 
@@ -61,6 +65,8 @@ class RunTest(unittest.TestCase):
     def digests(self):
         return sorted((self.home / "digests" / "ae").glob("*.md"))
 
+
+class RunTest(RunFixture):
     def test_new_then_nothing_then_one_added(self):
         code, (_, new, path) = self.run_cli()
         self.assertEqual((code, new), (0, "2"))
@@ -134,6 +140,101 @@ class RunTest(unittest.TestCase):
             code, _ = self.run_cli()
         self.assertEqual(code, 2)
         self.assertEqual(self.ats.requests, [])
+
+
+class BoardSourcesTest(RunFixture):
+    """Boards come from the boards file and from discovery; a board is one board whichever source names it."""
+
+    def discover(self, *slugs):
+        conn = store.open_db(self.home)
+        try:
+            store.replace_discovered(conn, [Board("ashby", s, s, f"{self.ats.url}/posting-api/job-board/{s}")
+                                            for s in slugs], "2026-10-11T00:00:00.000000+00:00")
+        finally:
+            conn.close()
+
+    def list_boards(self, *slugs):
+        (self.home / "boards.json").write_text(json.dumps({"companies": [
+            {"company": s.title(), "board_url": f"{self.ats.url}/posting-api/job-board/{s}"} for s in slugs]}))
+
+    def requests_to(self, slug):
+        return sum(1 for _, path, _ in self.ats.requests if path == f"/posting-api/job-board/{slug}")
+
+    def test_discovered_only_install(self):
+        self.write_config(boards_file=False)
+        self.discover("acme")
+        code, (_, new, path) = self.run_cli()
+        self.assertEqual((code, new), (0, "2"))
+        self.assertIn("## acme — Enterprise Account Executive · London", Path(path).read_text())
+
+    def test_listed_name_wins_over_the_discovered_slug(self):
+        self.list_boards("acme")
+        self.discover("acme")
+        code, (_, new, path) = self.run_cli()
+        self.assertEqual((code, new), (0, "2"))
+        self.assertIn("## Acme — Enterprise Account Executive · London", Path(path).read_text())
+        self.assertEqual(self.requests_to("acme"), 1)
+
+    def test_no_boards_is_a_usage_error(self):
+        self.write_config(boards_file=False)
+        self.assertEqual(self.run_cli()[0], 2)
+
+    def test_board_moving_between_sources_is_read_once_and_never_redelivered(self):
+        self.write_config(boards_file=False)
+        self.discover("acme")
+        self.assertEqual(self.run_cli()[1][1], "2")
+        self.write_config(boards_file=True)
+        self.list_boards("ACME")
+        before = self.requests_to("acme")
+        self.assertEqual(self.run_cli(), (0, ["ae", "0", "-"]))
+        self.assertEqual(self.requests_to("acme"), before + 1)
+        self.discover()
+        self.assertEqual(self.run_cli(), (0, ["ae", "0", "-"]))
+        self.write_config(boards_file=False)
+        self.discover("acme")
+        self.assertEqual(self.run_cli(), (0, ["ae", "0", "-"]))
+
+    def test_discovered_board_is_skipped_after_three_404s_but_a_listed_one_never(self):
+        self.list_boards("acme", "listedgone")
+        self.discover("gone")
+        for _ in range(store.DEAD_AFTER + 2):
+            self.run_cli()
+        self.assertEqual(self.requests_to("gone"), store.DEAD_AFTER)
+        self.assertEqual(self.requests_to("listedgone"), store.DEAD_AFTER + 2)
+
+    def test_carried_over_postings_of_a_404_board_wait_and_of_a_failing_board_go_out(self):
+        for status, delivered in [(404, "0"), (500, "2")]:
+            with self.subTest(status=status):
+                self.setUp()
+                self.list_boards("acme")
+                self.model.routes["/chat/completions"] = (503, {"error": "down"})
+                self.assertEqual(self.run_cli()[0], 1)
+                self.model_ok()
+                self.ats.routes["/posting-api/job-board/acme"] = (status, {"error": "x"})
+                self.assertEqual(self.run_cli()[1][1], delivered)
+
+    def test_board_back_after_a_404_delivers_its_carried_postings(self):
+        self.list_boards("acme")
+        self.model.routes["/chat/completions"] = (503, {"error": "down"})
+        self.run_cli()
+        self.model_ok()
+        self.ats.routes["/posting-api/job-board/acme"] = (404, {"error": "x"})
+        self.assertEqual(self.run_cli()[1][1], "0")
+        self.ats.routes["/posting-api/job-board/acme"] = (200, lambda _: (200, {"jobs": self.jobs}))
+        self.assertEqual(self.run_cli()[1][1], "2")
+
+    def test_board_dropped_from_discovery_contributes_nothing_until_listed(self):
+        self.write_config(boards_file=False)
+        self.discover("acme")
+        self.model.routes["/chat/completions"] = (503, {"error": "down"})
+        self.run_cli()
+        self.model_ok()
+        self.ats.routes["/posting-api/job-board/other"] = (200, {"jobs": []})
+        self.discover("other")
+        self.assertEqual(self.run_cli(), (0, ["ae", "0", "-"]))
+        self.write_config(boards_file=True)
+        self.list_boards("acme")
+        self.assertEqual(self.run_cli()[1][1], "2")
 
 
 if __name__ == "__main__":

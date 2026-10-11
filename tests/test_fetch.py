@@ -1,5 +1,6 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -8,6 +9,12 @@ from jobscan import ashby, fetch
 from jobscan.config import ConfigError
 from jobscan.records import Board
 from tests.fakes import FakeServer, ashby_job
+
+
+def split(boards):
+    outcomes = list(fetch.fetch_each(boards))
+    return ([o for o in outcomes if isinstance(o, fetch.BoardFetch)],
+            [o for o in outcomes if isinstance(o, fetch.BoardFailure)])
 
 
 class AshbyBoardTest(unittest.TestCase):
@@ -71,7 +78,7 @@ class FetchBoardTest(unittest.TestCase):
         self.server.routes[f"/posting-api/job-board/{slug}"] = (status, body)
 
     def fetch_one(self, slug="acme"):
-        fetched, failed = fetch.fetch_all([self.board(slug)])
+        fetched, failed = split([self.board(slug)])
         return fetched[0].postings if fetched else failed[0].reason
 
     def test_parses_listed_jobs_with_all_locations(self):
@@ -102,7 +109,7 @@ class FetchBoardTest(unittest.TestCase):
         for slug, (status, body) in cases.items():
             self.serve(slug, status, body)
         self.serve("empty", 200, {"jobs": []})
-        fetched, failed = fetch.fetch_all([self.board(s) for s in [*cases, "empty"]])
+        fetched, failed = split([self.board(s) for s in [*cases, "empty"]])
         self.assertEqual([(r.board.slug, r.postings) for r in fetched], [("empty", ())])
         self.assertEqual({f.board.slug: f.reason for f in failed}, {
             "malformed": "malformed JSON", "nolist": "response has no `jobs` list",
@@ -133,12 +140,37 @@ class FetchBoardTest(unittest.TestCase):
         self.serve("gone", 404, {"error": "not found"})
         self.serve("busy", 503, {"error": "busy"})
         self.serve("bad", 200, "{not json")
-        _, failed = fetch.fetch_all([self.board(s) for s in ("gone", "busy", "bad")])
+        _, failed = split([self.board(s) for s in ("gone", "busy", "bad")])
         self.assertEqual({f.board.slug: f.http_status for f in failed}, {"gone": 404, "busy": 503, "bad": None})
+
+    def test_every_429_response_is_logged(self):
+        for statuses, logged in [([429, 200], 1), ([429, 429, 429], 3), ([503, 503, 429], 1)]:
+            with self.subTest(statuses=statuses):
+                answers = iter(statuses)
+                self.server.routes["/posting-api/job-board/acme"] = (
+                    200, lambda _, answers=answers: (s := next(answers), {"jobs": []} if s == 200 else {}))
+                with self.assertLogs("jobscan", "INFO") as logs:
+                    split([self.board()])
+                lines = [m for m in logs.output if "board_429 board=ashby:acme" in m]
+                self.assertEqual(len(lines), logged)
+
+    def test_slow_consumer_bounds_boards_in_flight(self):
+        started = []
+
+        def fake_fetch(board):
+            started.append(board.id)
+            return fetch.BoardFetch(board, ())
+
+        boards = [self.board(f"b{i}") for i in range(5 * fetch.IN_FLIGHT)]
+        with mock.patch.object(fetch, "_fetch_isolated", fake_fetch):
+            for consumed, _ in enumerate(fetch.fetch_each(boards), start=1):
+                time.sleep(0.001)
+                self.assertLessEqual(len(started), consumed - 1 + fetch.IN_FLIGHT)
+        self.assertEqual(len(started), len(boards))
 
     def test_unreachable_board_is_a_failure(self):
         board = Board(ats="ashby", slug="gone", company="Gone", api_url="http://127.0.0.1:9/posting-api/job-board/gone")
-        _, (failure,) = fetch.fetch_all([board])
+        _, (failure,) = split([board])
         self.assertTrue(failure.reason.startswith("network"))
 
 

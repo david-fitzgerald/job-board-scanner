@@ -6,7 +6,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 
 from jobscan import digest, fetch, prefilter, store, tag
-from jobscan.config import Config, Profile
+from jobscan.config import Config, ConfigError, Profile
+from jobscan.records import Board
 
 log = logging.getLogger("jobscan")
 
@@ -44,18 +45,36 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
 def _fetch(conn: sqlite3.Connection, config: Config, now: str) -> tuple[int, int, set[str]]:
     """Fetches and stores every board; returns boards read, boards failed, and the boards whose postings may be
     delivered this run: those read, and those failing for a reason that may clear (not a 404: that board is gone)."""
-    boards, skipped = fetch.load_boards(config.boards_file)
-    log.info("fetch_start boards=%d skipped_unrecognised=%d", len(boards), skipped)
-    fetched, failed = fetch.fetch_all(boards)
-    for result in fetched:
-        store.apply_fetch(conn, result.board.id, result.postings, now)
-    for failure in failed:
-        log.warning("board_failed company=%r board=%s reason=%r", failure.board.company, failure.board.id,
-                    failure.reason)
-    log.info("fetch_done boards_read=%d boards_failed=%d postings=%d", len(fetched), len(failed),
-             sum(len(r.postings) for r in fetched))
-    eligible = {r.board.id for r in fetched} | {f.board.id for f in failed if f.http_status != 404}
-    return len(fetched), len(failed), eligible
+    read, not_found, transient, postings = [], [], [], 0
+    for outcome in fetch.fetch_each(_boards(conn, config)):
+        if isinstance(outcome, fetch.BoardFetch):
+            store.apply_fetch(conn, outcome.board.id, outcome.postings, now)
+            read.append(outcome.board.id)
+            postings += len(outcome.postings)
+        elif outcome.http_status == 404:
+            log.info("board_not_found board=%s", outcome.board.id)
+            not_found.append(outcome.board.id)
+        else:
+            log.warning("board_failed company=%r board=%s reason=%r", outcome.board.company, outcome.board.id,
+                        outcome.reason)
+            transient.append(outcome.board.id)
+    store.record_board_outcomes(conn, read, not_found)
+    log.info("fetch_done boards_read=%d boards_not_found=%d boards_failed=%d postings=%d", len(read),
+             len(not_found), len(transient), postings)
+    return len(read), len(not_found) + len(transient), set(read) | set(transient)
+
+
+def _boards(conn: sqlite3.Connection, config: Config) -> list[Board]:
+    """The boards file's boards plus the live discovered ones; on the same board the file's entry wins, for its
+    company name. File boards are never skipped, however often they 404."""
+    listed, skipped = fetch.load_boards(config.boards_file) if config.boards_file else ([], 0)
+    discovered = store.live_discovered(conn)
+    boards = {b.id: b for b in discovered} | {b.id: b for b in listed}
+    if not boards:
+        raise ConfigError("no boards to read: run `jobscan discover`, or set boards_file in config.toml")
+    log.info("fetch_start boards=%d listed=%d discovered=%d skipped_unrecognised=%d", len(boards), len(listed),
+             len(discovered), skipped)
+    return list(boards.values())
 
 
 def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: list[tag.TagDef], config: Config,

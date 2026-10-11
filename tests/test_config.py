@@ -33,6 +33,14 @@ class ConfigTest(unittest.TestCase):
         self.assertIsNone(config.api_key)
         self.assertNotIn("sk-or", repr(config))
 
+    def test_boards_file_is_optional_and_resolves_against_home(self):
+        model = '[model]\nbase_url = "http://localhost:11434/v1"\nslug = "q"\n'
+        self.assertIsNone(self.load(model).boards_file)
+        self.assertEqual(self.load('boards_file = "b.json"\n' + model).boards_file, self.home / "b.json")
+        self.assertEqual(self.load('boards_file = "/x/b.json"\n' + model).boards_file, Path("/x/b.json"))
+        with self.assertRaises(ConfigError):
+            self.load('boards_file = ""\n' + model)
+
     def test_bad_base_url(self):
         pinned = '\nprovider = "p"\nquantization = "q"\n'
         for url in ["localhost:11434", "https://[::1", "http://localhost:99999/v1", "http://openrouter.ai/api/v1",

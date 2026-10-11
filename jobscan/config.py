@@ -26,7 +26,7 @@ class ModelConfig:
 @dataclass(frozen=True)
 class Config:
     home: Path
-    boards_file: Path
+    boards_file: Path | None  # optional: boards read alongside the discovered ones
     model: ModelConfig
     api_key: str | None = field(repr=False)
 
@@ -51,9 +51,8 @@ def load_config(home: Path) -> Config:
     model = data.get("model")
     if not isinstance(model, dict):
         raise ConfigError(f"{path}: missing [model] table")
-    boards_file = Path(_string(data, "boards_file", path)).expanduser()
-    if not boards_file.is_absolute():
-        boards_file = home / boards_file
+    boards_file = _string(data, "boards_file", path, required=False)
+    boards_file = None if boards_file is None else home / Path(boards_file).expanduser()
     model_config = ModelConfig(
         base_url=_string(model, "base_url", path).rstrip("/"),
         slug=_string(model, "slug", path),
