@@ -212,8 +212,8 @@ def _call(model: ModelConfig, api_key: str | None, text: str, response_schema: d
         try:
             reply = json.loads(response.read())
         # The request was accepted (and may be billed), so a cut-off or unreadable body is an unknown cost,
-        # not an unbilled failure.
-        except (OSError, http.client.HTTPException, ValueError):
+        # not an unbilled failure. RecursionError: deeply nested JSON on Python < 3.14.
+        except (OSError, http.client.HTTPException, ValueError, RecursionError):
             reply = None
     if not isinstance(reply, dict):  # answered, possibly billed, but nothing readable: billing unknown
         return _Reply(content=None, usage=Usage(cost_reported=False))
@@ -243,7 +243,7 @@ def _finite_non_negative(value) -> bool:
 def parse_reply(content: str, defs: list[TagDef], posting: Posting) -> dict[str, TagResult]:
     try:
         data = json.loads(content)
-    except ValueError:  # includes integers past the interpreter's digit limit
+    except (ValueError, RecursionError):  # also integers past the digit limit, and deeply nested JSON
         raise ReplyError("not JSON") from None
     if not isinstance(data, dict) or set(data) != {d.name for d in defs}:
         raise ReplyError("not an object with exactly the requested tags")

@@ -65,8 +65,9 @@ def load_config(home: Path) -> Config:
         url.port  # raises on a malformed port
     except ValueError:
         url = None
-    if url is None or url.scheme not in ("http", "https") or not url.hostname:
-        raise ConfigError(f"{path}: `model.base_url` must be an http(s) URL")
+    if url is None or url.scheme not in ("http", "https") or not url.hostname or url.query or url.fragment \
+            or not model_config.base_url.isprintable() or " " in model_config.base_url:
+        raise ConfigError(f"{path}: `model.base_url` must be an http(s) URL with no spaces, query or fragment")
     # The OpenRouter key goes to OpenRouter only, never to another configured endpoint.
     api_key = None
     if url.hostname == "openrouter.ai":

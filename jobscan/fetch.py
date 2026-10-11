@@ -38,7 +38,7 @@ def load_boards(path: Path) -> tuple[list[Board], int]:
     board id, plus the count of entries no adapter recognises."""
     try:
         entries = json.loads(path.read_text())["companies"]
-    except (OSError, ValueError, KeyError, TypeError) as e:
+    except (OSError, ValueError, KeyError, TypeError, RecursionError) as e:
         raise ConfigError(f"{path}: not a readable boards file ({type(e).__name__}: {e})") from None
     if not isinstance(entries, list) or not all(isinstance(e, dict) for e in entries):
         raise ConfigError(f"{path}: `companies` must be a list of objects")
@@ -65,8 +65,9 @@ def fetch_all(boards: list[Board]) -> tuple[list[BoardFetch], list[BoardFailure]
 def _fetch_isolated(board: Board) -> BoardFetch | BoardFailure:
     try:
         return BoardFetch(board, ADAPTERS[board.ats].parse(board, _get_json(board.api_url)))
-    # OSError covers URLError, timeouts and resets; ValueError covers bad JSON and bad UTF-8.
-    except (OSError, http.client.HTTPException, ValueError, BoardError) as e:
+    # OSError covers URLError, timeouts and resets; ValueError covers bad JSON and bad UTF-8;
+    # RecursionError covers deeply nested JSON on Python < 3.14.
+    except (OSError, http.client.HTTPException, ValueError, RecursionError, BoardError) as e:
         return BoardFailure(board, _reason(e))
 
 
@@ -95,6 +96,6 @@ def _reason(e: Exception) -> str:
         return f"network: {e.reason}"
     if isinstance(e, (OSError, http.client.HTTPException)):
         return f"network: {type(e).__name__}"
-    if isinstance(e, ValueError):
+    if isinstance(e, (ValueError, RecursionError)):
         return "malformed JSON"
     return str(e) or type(e).__name__

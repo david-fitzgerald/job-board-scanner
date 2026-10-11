@@ -35,7 +35,8 @@ class ConfigTest(unittest.TestCase):
 
     def test_bad_base_url(self):
         pinned = '\nprovider = "p"\nquantization = "q"\n'
-        for url in ["localhost:11434", "https://[::1", "http://localhost:99999/v1", "http://openrouter.ai/api/v1"]:
+        for url in ["localhost:11434", "https://[::1", "http://localhost:99999/v1", "http://openrouter.ai/api/v1",
+                    "http://local host/v1", "http://model.invalid/v1#frag", "http://model.invalid/v1?x=1"]:
             with self.assertRaises(ConfigError, msg=url):
                 self.load(f'boards_file = "b.json"\n[model]\nbase_url = "{url}"\nslug = "q"' + pinned)
 

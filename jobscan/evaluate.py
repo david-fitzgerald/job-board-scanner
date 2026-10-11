@@ -49,7 +49,7 @@ def load_set(path: Path) -> list[LabelledPosting]:
     """Parse the whole set before any model call: a malformed row is a usage error, not a mid-run crash."""
     try:
         rows = json.loads(path.read_text())
-    except (OSError, ValueError) as e:
+    except (OSError, ValueError, RecursionError) as e:
         raise ConfigError(f"{path}: not readable JSON ({type(e).__name__})") from None
     if not isinstance(rows, list):
         raise ConfigError(f"{path}: must be a JSON list")
@@ -135,6 +135,7 @@ def _save(home: Path, items: list[LabelledPosting], attempts: dict[str, tag.TagA
             row = {"id": item.id, "labels": item.labels,
                    "error": attempt.error if isinstance(attempt, tag.TagFailure) else None if attempt else "not started",
                    "usage": asdict(attempt.usage) if attempt else None,
+                   "accepted_reasoning_tokens": attempt.reasoning_tokens if isinstance(attempt, tag.TagSuccess) else None,
                    "tags": {k: asdict(v) for k, v in attempt.results.items()}
                    if isinstance(attempt, tag.TagSuccess) else None}
             f.write(json.dumps(row, ensure_ascii=False) + "\n")

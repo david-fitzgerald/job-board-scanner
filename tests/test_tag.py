@@ -219,6 +219,12 @@ class TagPostingTest(unittest.TestCase):
         attempt = tag.tag_posting(POSTING, DEFS, self.model, None)
         self.assertEqual((type(attempt), attempt.error), (tag.TagFailure, "invalid reply: not JSON"))
 
+    def test_deeply_nested_reply_is_an_invalid_reply(self):
+        nested = "[" * 200_000 + "]" * 200_000
+        with mock.patch.object(tag.json, "loads", side_effect=RecursionError):
+            with self.assertRaises(tag.ReplyError):
+                tag.parse_reply(nested, DEFS, POSTING)
+
     def test_redirects_are_not_followed(self):
         elsewhere = FakeServer()
         self.addCleanup(elsewhere.close)
