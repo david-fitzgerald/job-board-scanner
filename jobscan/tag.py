@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
-from jobscan.config import ConfigError, ModelConfig
+from jobscan.config import ConfigError, CustomTag, ModelConfig
 from jobscan.records import Posting
 
 TRIES = 3
@@ -28,6 +28,8 @@ TIMEOUT = 300
 WORKERS = 4
 STOP_AFTER_FAILURES = 3  # consecutive failed postings → treat the model as unavailable
 UNKNOWN = "unknown"
+# G2 validated `location_eligible` for UK eligibility only.
+UK = re.compile(r"\b(UK|U\.K\.|United Kingdom|Britain|England|Scotland|Wales|Northern Ireland|London)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -37,6 +39,7 @@ class TagDef:
     values: tuple[str, ...] | None  # None: free text
     multi: bool
     default: str | None
+    validated: bool  # an `eval` has passed this tag; shown in the digest, not part of the question
 
     @property
     def hash(self) -> str:
@@ -99,18 +102,42 @@ def _builtins() -> dict:
     return tomllib.loads((Path(__file__).parent / "tags.toml").read_text())
 
 
-def definitions(tag_names: tuple[str, ...], eligible_where: str) -> list[TagDef]:
+def definitions(tag_names: tuple[str, ...], eligible_where: str, custom: tuple[CustomTag, ...] = ()) -> list[TagDef]:
+    """The built-ins named, then the custom tags. Two tags asking the same question are refused: cached answers are
+    keyed by the question, so they would overwrite each other."""
     builtins = _builtins()
     unknown = [n for n in tag_names if n not in builtins]
     if unknown:
         raise ConfigError(f"unknown tags {unknown}; built-ins are {sorted(builtins)}")
-    return [TagDef(
+    shadowing = [c.name for c in custom if c.name in builtins]
+    if shadowing:
+        raise ConfigError(f"custom tags {shadowing} use built-in names")
+    defs = [_builtin(name, builtins[name], eligible_where) for name in tag_names] + [_custom(c) for c in custom]
+    asked: dict[str, str] = {}
+    for d in defs:
+        if d.hash in asked:
+            raise ConfigError(f"tag `{d.name}` asks the same question as `{asked[d.hash]}`")
+        asked[d.hash] = d.name
+    return defs
+
+
+def _builtin(name: str, spec: dict, eligible_where: str) -> TagDef:
+    validated = spec.get("validated", False)
+    return TagDef(
         name=name,
-        definition=builtins[name]["definition"].strip().replace("{eligible_where}", eligible_where),
-        values=tuple(builtins[name]["values"]) if "values" in builtins[name] else None,
-        multi=builtins[name].get("multi", False),
-        default=builtins[name].get("default"),
-    ) for name in tag_names]
+        definition=spec["definition"].strip().replace("{eligible_where}", eligible_where),
+        values=tuple(spec["values"]) if "values" in spec else None,
+        multi=spec.get("multi", False),
+        default=spec.get("default"),
+        validated=bool(UK.search(eligible_where)) if validated == "uk" else validated is True,
+    )
+
+
+def _custom(tag: CustomTag) -> TagDef:
+    # Built-in definitions state their own defaults; a custom one gets the line here, so the model knows it.
+    default = f"\n- Default `{tag.default}`: the posting doesn't say." if tag.default else ""
+    return TagDef(name=tag.name, definition=tag.definition + default, values=tag.values, multi=tag.multi,
+                  default=tag.default, validated=False)
 
 
 PROMPT = """You tag job postings. Apply the rules below exactly, using only the posting text.

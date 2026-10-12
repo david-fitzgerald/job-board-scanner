@@ -36,7 +36,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         config = load_config(home)
         profile = load_profile(home)
-        defs = tag.definitions(profile.tags, profile.eligible_where)
+        defs = tag.definitions(profile.tags, profile.eligible_where, profile.custom_tags)
         _setup_logging(home)
         with _run_lock(home):
             outcome = scan.scan(config, profile, defs)

@@ -1,9 +1,12 @@
 # Built-in tag definitions. The model sees `definition` verbatim (after {eligible_where} is filled in from the
 # profile). `values` lists the allowed answers; a tag without `values` takes free text. `multi` tags answer
 # with a list of values (empty = the posting doesn't say). `default` is the answer when the posting is silent,
-# which needs no quote. founding and language_required follow the G2 labelling guide v2.1.0.
+# which needs no quote. founding and language_required follow the G2 labelling guide v2.1.0. `validated` says
+# whether `eval` has passed the tag; "uk" means only when the profile's `eligible_where` names the UK, the only
+# eligibility G2 tested.
 
 [founding]
+validated = true
 values = ["yes", "no"]
 default = "no"
 definition = """
@@ -14,6 +17,7 @@ The first and only hire in the role's own function **at the company**: the first
 """
 
 [location_eligible]
+validated = "uk"
 values = ["yes", "no", "unknown"]
 definition = """
 Someone who wants to work from {eligible_where} can do this job.
@@ -24,6 +28,7 @@ Someone who wants to work from {eligible_where} can do this job.
 """
 
 [segment]
+validated = false
 values = ["enterprise", "mid_market", "smb"]
 multi = true
 definition = """
@@ -34,6 +39,7 @@ The customer sizes this sales role sells to. List every segment the title or des
 """
 
 [language_required]
+validated = true
 default = "no"
 definition = """
 A language other than English is required. Answer `no` or the language name (`German`, `French`, …).
@@ -42,6 +48,7 @@ A language other than English is required. Answer `no` or the language name (`Ge
 """
 
 [tech_company]
+validated = false
 values = ["yes", "no", "unknown"]
 definition = """
 The company's main product is technology: software, SaaS, AI/ML, developer, data or security tools, or hardware such as devices and chips. Judge from what the posting says the company sells.

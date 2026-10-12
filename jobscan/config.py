@@ -1,5 +1,6 @@
 """Config and profile loading: TOML under $JOBSCAN_HOME parsed into typed records, or ConfigError."""
 import os
+import re
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -32,13 +33,28 @@ class Config:
 
 
 @dataclass(frozen=True)
+class CustomTag:
+    """A tag the profile defines for itself; never validated against labelled postings."""
+    name: str
+    definition: str
+    values: tuple[str, ...]
+    multi: bool
+    default: str | None  # stated to the model; a multi tag's default is the empty list
+
+
+@dataclass(frozen=True)
 class Profile:
     name: str
     titles: tuple[str, ...]
     exclude_titles: tuple[str, ...]
     locations: tuple[str, ...]
     eligible_where: str
-    tags: tuple[str, ...]
+    tags: tuple[str, ...]  # built-in tag names
+    custom_tags: tuple[CustomTag, ...]  # tagged after `tags`, in file order
+
+
+CUSTOM_TAG_NAME = re.compile(r"[a-z][a-z0-9_]*")
+CUSTOM_TAG_VALUES = ("yes", "no", "unknown")
 
 
 def jobscan_home() -> Path:
@@ -90,14 +106,50 @@ def load_profile(home: Path) -> Profile:
         raise ConfigError(f"{home / 'profiles'}: expected exactly one profile, found {len(files)}")
     path = files[0]
     data = _read_toml(path)
+    custom = _custom_tags(data, path)
+    tags = _unique(_strings(data, "tags", path, required=not custom), "tags", path)
     return Profile(
         name=path.stem,
         titles=_strings(data, "titles", path),
         exclude_titles=_strings(data, "exclude_titles", path, required=False),
         locations=_strings(data, "locations", path),
         eligible_where=_string(data, "eligible_where", path),
-        tags=_unique(_strings(data, "tags", path), "tags", path),
+        tags=tags,
+        custom_tags=custom,
     )
+
+
+def _custom_tags(data: dict, path: Path) -> tuple[CustomTag, ...]:
+    tables = data.get("custom_tags", {})
+    if not isinstance(tables, dict):
+        raise ConfigError(f"{path}: `custom_tags` must be a table of tables")
+    return tuple(_custom_tag(name, table, path) for name, table in tables.items())
+
+
+def _custom_tag(name: str, table, path: Path) -> CustomTag:
+    where = f"{path}: custom tag `{name}`"
+    if not CUSTOM_TAG_NAME.fullmatch(name):
+        raise ConfigError(f"{path}: custom tag name {name!r} must be lower-case letters, digits and _, "
+                          "starting with a letter")
+    if not isinstance(table, dict):
+        raise ConfigError(f"{where} must be a table")
+    unknown = set(table) - {"definition", "values", "multi", "default"}
+    if unknown:
+        raise ConfigError(f"{where}: unknown keys {sorted(unknown)}")
+    definition = table.get("definition")
+    if not isinstance(definition, str) or not definition.strip():
+        raise ConfigError(f"{where}: `definition` must be a non-empty string")
+    values = table.get("values", CUSTOM_TAG_VALUES)
+    if not isinstance(values, (list, tuple)) or not values \
+            or not all(isinstance(v, str) and v.strip() for v in values) or len(set(values)) != len(values):
+        raise ConfigError(f"{where}: `values` must be a non-empty list of different strings")
+    multi = table.get("multi", False)
+    if not isinstance(multi, bool):
+        raise ConfigError(f"{where}: `multi` must be true or false")
+    default = table.get("default")
+    if default is not None and (multi or default not in values):
+        raise ConfigError(f"{where}: `default` must be one of `values`, and a multi tag can't have one")
+    return CustomTag(name=name, definition=definition.strip(), values=tuple(values), multi=multi, default=default)
 
 
 def _read_toml(path: Path) -> dict:

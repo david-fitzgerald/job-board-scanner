@@ -42,6 +42,22 @@ class RenderTest(unittest.TestCase):
             "- tech_company: unknown",
         ])
 
+    def test_unvalidated_tags_marked_with_one_legend(self):
+        tags = {"founding": TagResult(value="yes", quote="first", verified=True, warn=False),
+                "climate": TagResult(value="unknown", quote=None, verified=False, warn=False)}
+        text = digest.render("pm", "2026-10-12", [entry(tags=tags), entry("2", tags=tags)], carried_over=0,
+                             unvalidated=frozenset({"climate"}))
+        self.assertEqual(text.count(digest.LEGEND), 1)
+        self.assertTrue(text.startswith("# pm — 2026-10-12 · 2 new\n\n" + digest.LEGEND + "\n\n## "))
+        self.assertEqual(text.count("- climate ⓘ: unknown"), 2)
+        self.assertEqual(text.count('- founding: **yes** — "first"'), 2)
+
+    def test_no_legend_without_unvalidated_tags_shown(self):
+        tags = {"founding": TagResult(value="yes", quote="first", verified=True, warn=False)}
+        for entries in ([entry(tags=tags)], []):
+            text = digest.render("pm", "2026-10-12", entries, carried_over=1, unvalidated=frozenset({"climate"}))
+            self.assertNotIn("ⓘ", text)
+
     def test_header_counts_carry_over(self):
         text = digest.render("david-ae", "2026-10-12", [], carried_over=3)
         self.assertEqual(text, "# david-ae — 2026-10-12 · 0 new · 3 untagged, carried over\n")

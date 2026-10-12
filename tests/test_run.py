@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from jobscan import cli, fetch, store, tag
+from jobscan import cli, digest, fetch, store, tag
 from jobscan.records import Board
 from tests.fakes import FakeServer, ashby_job, model_reply, tags_quoting_the_posting
 
@@ -140,6 +140,42 @@ class RunTest(RunFixture):
             code, _ = self.run_cli()
         self.assertEqual(code, 2)
         self.assertEqual(self.ats.requests, [])
+
+
+class CustomTagsTest(RunFixture):
+    def setUp(self):
+        super().setUp()
+        (self.home / "profiles" / "ae.toml").write_text(
+            'titles = ["Account Executive"]\nlocations = ["London"]\neligible_where = "the UK"\n'
+            'tags = ["founding", "location_eligible"]\n'
+            '[custom_tags.motion]\ndefinition = "Who the role sells to."\nvalues = ["b2b", "b2c"]\nmulti = true\n')
+
+        def answering(payload):
+            tags = tags_quoting_the_posting(payload)
+            return model_reply({"founding": tags["founding"], "location_eligible": tags["location_eligible"],
+                                "motion": {"value": ["b2b"], "quote": "We sell software."}})
+
+        self.model.routes["/chat/completions"] = (200, answering)
+
+    def test_custom_tag_reaches_the_digest_marked(self):
+        code, (_, new, path) = self.run_cli()
+        self.assertEqual((code, new), (0, "2"))
+        text = Path(path).read_text()
+        self.assertEqual(text.count(digest.LEGEND), 1)
+        self.assertEqual(text.count('- motion ⓘ: **b2b** — "We sell software."'), 2)
+        self.assertIn('- founding: **yes**', text)
+
+    def test_cached_custom_tags_render_the_same(self):
+        (self.home / "digests").mkdir()
+        (self.home / "digests" / "ae").write_text("a file where the directory should be")
+        self.assertEqual(self.run_cli()[0], 1)
+        calls = len(self.model.requests)
+        (self.home / "digests" / "ae").unlink()
+        code, (_, new, path) = self.run_cli()
+        self.assertEqual((code, new, len(self.model.requests)), (0, "2", calls))
+        text = Path(path).read_text()
+        self.assertEqual(text.count(digest.LEGEND), 1)
+        self.assertEqual(text.count('- motion ⓘ: **b2b** — "We sell software."'), 2)
 
 
 class BoardSourcesTest(RunFixture):

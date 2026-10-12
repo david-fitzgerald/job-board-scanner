@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from jobscan.config import ConfigError, load_config, load_profile
+from jobscan.config import ConfigError, CustomTag, load_config, load_profile
 
 OPENROUTER = 'boards_file = "b.json"\n[model]\nbase_url = "https://openrouter.ai/api/v1"\nslug = "x/y"\n'
 
@@ -58,6 +58,46 @@ class ConfigTest(unittest.TestCase):
         (self.home / "profiles" / "ae.toml").write_text('titles = ["AE"]\nexclude_titles = []\nlocations = ["London"]\n'
                                                         'eligible_where = "the UK"\ntags = ["founding"]\n')
         self.assertEqual(load_profile(self.home).exclude_titles, ())
+
+    def profile(self, text):
+        (self.home / "profiles").mkdir(exist_ok=True)
+        (self.home / "profiles" / "pm.toml").write_text(
+            'titles = ["PM"]\nlocations = ["London"]\neligible_where = "the UK"\n' + text)
+        return load_profile(self.home)
+
+    def test_custom_tags_in_file_order_with_defaults(self):
+        profile = self.profile('tags = ["founding"]\n'
+                               '[custom_tags.climate]\ndefinition = " Climate product. "\n'
+                               '[custom_tags.model]\ndefinition = "B2B or B2C."\n'
+                               'values = ["b2b", "b2c"]\nmulti = true\n'
+                               '[custom_tags.remote]\ndefinition = "Fully remote."\ndefault = "no"\n')
+        self.assertEqual(profile.tags, ("founding",))
+        self.assertEqual(profile.custom_tags, (
+            CustomTag("climate", "Climate product.", ("yes", "no", "unknown"), multi=False, default=None),
+            CustomTag("model", "B2B or B2C.", ("b2b", "b2c"), multi=True, default=None),
+            CustomTag("remote", "Fully remote.", ("yes", "no", "unknown"), multi=False, default="no"),
+        ))
+
+    def test_custom_tags_alone_need_no_builtins(self):
+        for tags in ['tags = []\n', '']:
+            profile = self.profile(tags + '[custom_tags.climate]\ndefinition = "Climate product."\n')
+            self.assertEqual((profile.tags, len(profile.custom_tags)), ((), 1))
+        for text in ['tags = []\n', '']:
+            with self.assertRaises(ConfigError, msg=text):
+                self.profile(text)
+
+    def test_bad_custom_tags_rejected(self):
+        for table in ['[custom_tags.Climate]\ndefinition = "x"', '[custom_tags.2x]\ndefinition = "x"',
+                      '[custom_tags.climate]\ndefinition = " "', '[custom_tags.climate]\nvalues = ["yes"]',
+                      '[custom_tags.climate]\ndefinition = "x"\nvalues = []',
+                      '[custom_tags.climate]\ndefinition = "x"\nvalues = ["yes", "yes"]',
+                      '[custom_tags.climate]\ndefinition = "x"\nmulti = "yes"',
+                      '[custom_tags.climate]\ndefinition = "x"\ndefault = "maybe"',
+                      '[custom_tags.climate]\ndefinition = "x"\nmulti = true\ndefault = "no"',
+                      '[custom_tags.climate]\ndefinition = "x"\nnote = "y"',
+                      'custom_tags = "climate"']:
+            with self.assertRaises(ConfigError, msg=table):
+                self.profile('tags = ["founding"]\n' + table + "\n")
 
     def test_duplicate_tags_rejected(self):
         (self.home / "profiles").mkdir()

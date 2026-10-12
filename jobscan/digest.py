@@ -15,28 +15,37 @@ class DigestEntry:
     tags: dict[str, TagResult]  # in the profile's tag order
 
 
-def render(profile: str, date: str, entries: list[DigestEntry], carried_over: int) -> str:
+UNVALIDATED = "ⓘ"
+LEGEND = f"{UNVALIDATED} marks a tag that hasn't been validated against labelled postings."
+
+
+def render(profile: str, date: str, entries: list[DigestEntry], carried_over: int,
+           unvalidated: frozenset[str] = frozenset()) -> str:
+    """`unvalidated` names the tags shown with ⓘ; the legend appears only when one of them does."""
     header = f"# {profile} — {date} · {len(entries)} new"
     if carried_over:
         header += f" · {carried_over} untagged, carried over"
     blocks = [header]
+    if any(name in unvalidated for entry in entries for name in entry.tags):
+        blocks.append(LEGEND)
     for entry in entries:
         p = entry.posting.posting
         blocks.append("\n".join([
             f"## {p.company} — {p.title} · {p.location or 'location not given'}",
             f"{p.url} · {ADAPTERS[p.ats].DISPLAY_NAME} · first seen {entry.posting.first_seen[:10]}",
-            *(_tag_line(name, result) for name, result in entry.tags.items()),
+            *(_tag_line(name + (f" {UNVALIDATED}" if name in unvalidated else ""), result)
+              for name, result in entry.tags.items()),
         ]))
     return "\n\n".join(blocks) + "\n"
 
 
-def _tag_line(name: str, result: TagResult) -> str:
+def _tag_line(label: str, result: TagResult) -> str:
     shown = (", ".join(result.value) or "unknown") if isinstance(result.value, tuple) else result.value
     if result.quote is None and not result.warn:  # unknown, empty or the tag's default: nothing to cite
-        return f"- {name}: {shown}"
+        return f"- {label}: {shown}"
     if result.quote is None:
-        return f"- {name}: **{shown}** ⚠ no quote"
-    return f'- {name}: **{shown}** — "{result.quote}"' + ("" if result.verified else " ⚠ quote not in posting")
+        return f"- {label}: **{shown}** ⚠ no quote"
+    return f'- {label}: **{shown}** — "{result.quote}"' + ("" if result.verified else " ⚠ quote not in posting")
 
 
 def publish(directory: Path, date: str, text: str) -> Path:

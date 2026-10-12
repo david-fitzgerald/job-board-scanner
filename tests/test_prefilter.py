@@ -6,7 +6,7 @@ from jobscan.records import Posting
 
 PROFILE = Profile(
     name="ae", titles=("Account Executive", "Founding Sales"), exclude_titles=("Sales Development", "Junior", "intern"),
-    locations=("London", "UK", "Remote (UK)"), eligible_where="the UK", tags=("founding",),
+    locations=("London", "UK", "Remote (UK)"), eligible_where="the UK", tags=("founding",), custom_tags=(),
 )
 
 
@@ -38,12 +38,12 @@ class PrefilterTest(unittest.TestCase):
 
     def test_unicode_case_folding(self):
         only = Profile(name="ae", titles=("Account Executive",), exclude_titles=(), locations=("Weißenburg",),
-                       eligible_where="the UK", tags=("founding",))
+                       eligible_where="the UK", tags=("founding",), custom_tags=())
         self.assertTrue(matches(posting("ACCOUNT EXECUTIVE", "WEISSENBURG"), only))
 
     def test_punctuation_ended_term_matches_itself(self):
         only = Profile(name="ae", titles=("Account Executive",), exclude_titles=(), locations=("Remote (UK)",),
-                       eligible_where="the UK", tags=("founding",))
+                       eligible_where="the UK", tags=("founding",), custom_tags=())
         self.assertTrue(matches(posting("Account Executive", "Remote (UK)"), only))
         self.assertTrue(matches(posting("Account Executive", "London / remote (uk)"), only))
         self.assertFalse(matches(posting("Account Executive", "Remote (UKI)"), only))

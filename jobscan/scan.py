@@ -33,7 +33,8 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
         matched = [p for p in store.pending(conn, profile.name, fetched.eligible)
                    if prefilter.matches(p.posting, profile)]
         entries, tagged, usage = _tag(conn, matched, defs, config)
-        outcome = _digest(conn, config, profile, entries, carried_over=len(matched) - len(entries))
+        outcome = _digest(conn, config, profile, entries, carried_over=len(matched) - len(entries),
+                          unvalidated=frozenset(d.name for d in defs if not d.validated))
         store.record_run(conn, store.RunRecord(
             started=started, finished=_now(), boards_read=fetched.read, boards_failed=fetched.failed,
             new=outcome.new, tagged=tagged, carried_over=outcome.carried_over, cost=usage.cost,
@@ -116,11 +117,11 @@ def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: lis
 
 
 def _digest(conn: sqlite3.Connection, config: Config, profile: Profile, entries: list[digest.DigestEntry],
-            carried_over: int) -> ScanOutcome:
+            carried_over: int, unvalidated: frozenset[str]) -> ScanOutcome:
     if not entries and not carried_over:
         return ScanOutcome(profile.name, new=0, carried_over=0, digest_path=None, digest_failed=False)
     today = date.today().isoformat()
-    text = digest.render(profile.name, today, entries, carried_over)
+    text = digest.render(profile.name, today, entries, carried_over, unvalidated)
     try:
         path = digest.publish(config.home / "digests" / profile.name, today, text)
     except OSError as e:

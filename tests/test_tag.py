@@ -1,3 +1,4 @@
+import hashlib
 import json
 import tempfile
 import unittest
@@ -5,7 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from jobscan import store, tag
-from jobscan.config import ConfigError, ModelConfig
+from jobscan.config import ConfigError, CustomTag, ModelConfig
 from jobscan.records import Posting
 from tests.fakes import FakeServer, model_reply
 
@@ -99,6 +100,50 @@ class DefinitionsTest(unittest.TestCase):
         changed = [tag.TagDef(**{**vars(founding), field: value}) for field, value in
                    [("definition", "x"), ("values", ("yes",)), ("multi", True), ("default", None)]]
         self.assertEqual(len({founding.hash, *(d.hash for d in changed)}), 5)
+
+    def test_builtin_questions_and_prompt_unchanged_by_custom_tags(self):
+        """The G2-evaluated prompt and the cache keys of every built-in stay exactly as they were."""
+        self.assertEqual({d.name: d.hash[:12] for d in DEFS}, {
+            "founding": "fc5a33558680", "location_eligible": "5c04fac66302", "segment": "400d4fe9edfe",
+            "language_required": "f725e786dd09", "tech_company": "b685ee1ad84e"})
+        posting = Posting(key="k", ats="ashby", board="b", company="c", title="T", location="L", url="u",
+                          description="D")
+        self.assertEqual(hashlib.sha256(tag.prompt(posting, DEFS).encode()).hexdigest()[:12], "2dc4a0825037")
+
+    def test_custom_tags_follow_builtins_with_their_default_stated(self):
+        defs = tag.definitions(("founding",), "the UK", (
+            CustomTag("climate", "Climate product.", ("yes", "no", "unknown"), multi=False, default="no"),
+            CustomTag("model", "B2B or B2C.", ("b2b", "b2c"), multi=True, default=None)))
+        self.assertEqual([(d.name, d.validated) for d in defs],
+                         [("founding", True), ("climate", False), ("model", False)])
+        self.assertEqual(defs[1].definition, "Climate product.\n- Default `no`: the posting doesn't say.")
+        self.assertEqual(defs[2].definition, "B2B or B2C.")
+        text = tag.prompt(POSTING, defs)
+        self.assertIn("### `climate`\nValue: one of `yes` · `no` · `unknown`.\nClimate product.\n- Default `no`", text)
+        self.assertIn("### `model`\nValue: a list of zero or more of `b2b` · `b2c`.\nB2B or B2C.", text)
+        props = tag.schema(defs)["properties"]
+        self.assertEqual(props["model"]["properties"]["value"],
+                         {"type": "array", "items": {"type": "string", "enum": ["b2b", "b2c"]}})
+        results = tag.parse_reply(json.dumps({"founding": {"value": "no", "quote": None},
+                                              "climate": {"value": "no", "quote": None},
+                                              "model": {"value": ["b2c", "b2b"], "quote": "sales hire"}}),
+                                  defs, POSTING)
+        self.assertEqual((results["climate"].warn, results["model"].value), (False, ("b2b", "b2c")))
+
+    def test_custom_tag_using_a_builtin_name_or_question_is_refused(self):
+        eligible = tag.definitions(("location_eligible",), "the UK")[0]
+        twin = CustomTag("twin", "Climate product.", ("yes", "no", "unknown"), multi=False, default=None)
+        for custom in [(CustomTag("founding", "x", ("yes", "no"), multi=False, default=None),),
+                       (twin, CustomTag("other", "Climate product.", ("yes", "no", "unknown"), False, None)),
+                       (CustomTag("copy", eligible.definition, eligible.values, False, None),)]:
+            with self.assertRaises(ConfigError, msg=custom):
+                tag.definitions(("founding", "location_eligible"), "the UK", custom)
+
+    def test_location_eligible_validated_only_for_the_uk(self):
+        for where, validated in [("the UK, working from London", True), ("United Kingdom", True),
+                                 ("Berlin", False), ("remote anywhere", False), ("Ukraine", False)]:
+            (d,) = tag.definitions(("location_eligible",), where)
+            self.assertEqual(d.validated, validated, where)
 
     def test_unknown_tag_is_a_config_error(self):
         with self.assertRaises(ConfigError):
