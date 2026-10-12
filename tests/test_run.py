@@ -6,18 +6,30 @@ import json
 import os
 import tempfile
 import unittest
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest import mock
 
-from jobscan import cli, digest, fetch, store, tag
+from jobscan import ashby, cli, crawl, digest, fetch, scan, store, tag
 from jobscan.records import Board
-from tests.fakes import FakeServer, ashby_job, model_reply, tags_quoting_the_posting
+from tests.fakes import (
+    FakeFiles,
+    FakeServer,
+    ashby_job,
+    cdx_line,
+    crawl_files,
+    crawl_list,
+    model_reply,
+    tags_quoting_the_posting,
+)
 
 PROFILE = """titles = ["Account Executive"]
 locations = ["London"]
 eligible_where = "the UK"
 tags = ["founding", "location_eligible", "segment", "language_required", "tech_company"]
 """
+# Keeps the discovered list non-empty and fresh without adding a board to read: `run` never crawls in these tests.
+SENTINEL = Board("ashby", "sentinel", "sentinel", "http://127.0.0.1:9/never")
 
 
 class RunFixture(unittest.TestCase):
@@ -48,6 +60,22 @@ class RunFixture(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"JOBSCAN_HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
+        self.seed_discovery()
+        # Not a CrawlError, which `run` would log and swallow: an unexpected crawl fails the test.
+        self.tripwire = mock.patch.object(crawl, "latest_crawls", side_effect=AssertionError("unexpected crawl"))
+        self.tripwire.start()
+        self.addCleanup(mock.patch.stopall)
+
+    def seed_discovery(self, *slugs, at=None):
+        """Make `slugs` the discovered boards, as `discover` last did `at` (default now)."""
+        conn = store.open_db(self.home)
+        try:
+            boards = [Board("ashby", s, s, f"{self.ats.url}/posting-api/job-board/{s}") for s in slugs]
+            store.replace_discovered(conn, [*boards, SENTINEL], at or scan._now())
+            with conn:
+                conn.execute("UPDATE boards SET not_found = ? WHERE id = ?", (store.DEAD_AFTER, SENTINEL.id))
+        finally:
+            conn.close()
 
     def write_config(self, boards_file):
         (self.home / "config.toml").write_text(('boards_file = "boards.json"\n' if boards_file else "")
@@ -183,12 +211,7 @@ class BoardSourcesTest(RunFixture):
     """Boards come from the boards file and from discovery; a board is one board whichever source names it."""
 
     def discover(self, *slugs):
-        conn = store.open_db(self.home)
-        try:
-            store.replace_discovered(conn, [Board("ashby", s, s, f"{self.ats.url}/posting-api/job-board/{s}")
-                                            for s in slugs], "2026-10-11T00:00:00.000000+00:00")
-        finally:
-            conn.close()
+        self.seed_discovery(*slugs)
 
     def list_boards(self, *slugs):
         (self.home / "boards.json").write_text(json.dumps({"companies": [
@@ -272,6 +295,74 @@ class BoardSourcesTest(RunFixture):
         self.write_config(boards_file=True)
         self.list_boards("acme")
         self.assertEqual(self.run_cli()[1][1], "2")
+
+
+class DiscoveryRefreshTest(RunFixture):
+    """`run` rediscovers boards itself when the list is empty or 30 days old, and carries on if it can't."""
+
+    def setUp(self):
+        super().setUp()
+        self.tripwire.stop()
+        self.cc = FakeFiles()
+        self.addCleanup(self.cc.close)
+        for target, name, value in [(crawl, "BASE", self.cc.url), (crawl, "RETRY_PAUSES", (0, 0, 0)),
+                                    (ashby, "API", f"{self.ats.url}/posting-api/job-board/")]:
+            mock.patch.object(target, name, value).start()
+        crawls = ("CC-MAIN-2026-39", "CC-MAIN-2026-34", "CC-MAIN-2026-30")
+        self.cc.files.update(crawl_list(*crawls))
+        for crawl_id in crawls:
+            self.cc.files.update(crawl_files(crawl_id, [cdx_line("https://jobs.ashbyhq.com/acme/job-1"),
+                                                        cdx_line("https://www.example.com/")]))
+        self.write_config(boards_file=False)
+
+    def days_ago(self, days):
+        return (datetime.now(UTC) - timedelta(days=days)).isoformat(timespec="microseconds")
+
+    def discovered(self):
+        conn = store.open_db(self.home)
+        try:
+            return [b.id for b in store.live_discovered(conn)], store.discovered_at(conn)
+        finally:
+            conn.close()
+
+    def test_stale_list_is_rediscovered_before_fetching(self):
+        self.seed_discovery("old", at=self.days_ago(31))
+        code, (_, new, path) = self.run_cli()
+        self.assertEqual((code, new), (0, "2"))
+        self.assertIn("## acme — Enterprise Account Executive", Path(path).read_text())
+        boards, at = self.discovered()
+        self.assertEqual(boards, ["ashby:acme"])
+        self.assertGreater(at, self.days_ago(1))
+
+    def test_fresh_list_is_not_rediscovered(self):
+        self.seed_discovery("acme", at=self.days_ago(29))
+        self.assertEqual(self.run_cli()[1][1], "2")
+        self.assertEqual(self.cc.requests, [])
+
+    def test_empty_list_is_rediscovered(self):
+        conn = store.open_db(self.home)
+        with conn:
+            conn.execute("DELETE FROM boards")
+        conn.close()
+        self.assertEqual(self.run_cli()[1][1], "2")
+        self.assertEqual(self.discovered()[0], ["ashby:acme"])
+
+    def test_unreadable_crawl_keeps_the_old_list_and_the_run_goes_on(self):
+        stale = self.days_ago(31)
+        self.seed_discovery("acme", at=stale)
+        self.cc.fail["/cc-index/collections/CC-MAIN-2026-30/indexes/cluster.idx"] = [503] * 4
+        code, (_, new, _) = self.run_cli()
+        self.assertEqual((code, new), (0, "2"))
+        self.assertEqual(self.discovered(), (["ashby:acme"], stale))
+        self.assertIn("discover_failed", (self.home / "runs.log").read_text())
+
+    def test_no_list_and_no_crawl_is_a_usage_error(self):
+        conn = store.open_db(self.home)
+        with conn:
+            conn.execute("DELETE FROM boards")
+        conn.close()
+        self.cc.files.clear()
+        self.assertEqual(self.run_cli()[0], 2)
 
 
 if __name__ == "__main__":

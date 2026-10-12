@@ -31,11 +31,23 @@ assert not failed, f"preflight: boards failed {[f.board.slug for f in failed]}"
 assert 1 <= len(matched) <= 3, f"preflight: {len(matched)} postings match; the fixture needs 1-3 (update tests/smoke/)"
 assert all(len(p.description) <= 15000 for p in matched), "preflight: a matched description exceeds 15,000 chars"
 print(f"preflight: {len(matched)} matching postings")
+# A fresh discovered list holding one dead board: `run` reads exactly the boards file's three, without crawling.
+from datetime import UTC, datetime
+from jobscan import store
+from jobscan.records import Board
+conn = store.open_db(home)
+store.replace_discovered(conn, [Board("ashby", "sentinel", "sentinel", "http://127.0.0.1:9/never")],
+                         datetime.now(UTC).isoformat(timespec="microseconds"))
+with conn:
+    conn.execute("UPDATE boards SET not_found = ?", (store.DEAD_AFTER,))
+conn.close()
 PY
 
 first=$(headless_run 2>>"$home/smoke-stderr.log") || { echo "FAIL: first run exited $?"; cat "$home/smoke-stderr.log"; exit 1; }
 second=$(headless_run 2>>"$home/smoke-stderr.log") || { echo "FAIL: second run exited $?"; exit 1; }
 echo "run 1: $first"
+grep -q "fetch_start boards=3 " "$home/runs.log" || { echo "FAIL: run did not read exactly the three smoke boards"; exit 1; }
+if grep -q "discover" "$home/runs.log"; then echo "FAIL: run crawled Common Crawl"; exit 1; fi
 echo "run 2: $second"
 
 clean_env env FIRST="$first" SECOND="$second" python3 - <<'PY'

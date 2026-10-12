@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
-from jobscan import digest, fetch, prefilter, store, tag
+from jobscan import digest, discover, fetch, prefilter, store, tag
 from jobscan.config import Config, ConfigError, Profile
 from jobscan.records import Board
 
@@ -29,6 +29,7 @@ def scan(config: Config, profile: Profile, defs: list[tag.TagDef]) -> ScanOutcom
     started = _now()
     conn = store.open_db(config.home)
     try:
+        discover.refresh_if_stale(conn, datetime.fromisoformat(started))
         fetched = _fetch(conn, config, started)
         matched = [p for p in store.pending(conn, profile.name, fetched.eligible)
                    if prefilter.matches(p.posting, profile)]
@@ -79,7 +80,7 @@ def _boards(conn: sqlite3.Connection, config: Config) -> list[Board]:
     discovered = store.live_discovered(conn)
     boards = {b.id: b for b in discovered} | {b.id: b for b in listed}
     if not boards:
-        raise ConfigError("no boards to read: run `jobscan discover`, or set boards_file in config.toml")
+        raise ConfigError("no boards to read: discovery found none (see runs.log), and config.toml sets no boards_file")
     log.info("fetch_start boards=%d listed=%d discovered=%d skipped_unrecognised=%d", len(boards), len(listed),
              len(discovered), skipped)
     return list(boards.values())

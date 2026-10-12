@@ -28,6 +28,25 @@ class ConfigTest(unittest.TestCase):
                 self.load(text, key)
             self.assertNotIn(key.strip() or "\0", str(caught.exception))
 
+    def test_key_file_when_the_environment_has_none(self):
+        pinned = OPENROUTER + 'provider = "parasail"\nquantization = "fp8"\n'
+        key_file = self.home / "openrouter.key"
+        key_file.write_text("sk-or-v1-file\n")
+        key_file.chmod(0o600)
+        self.assertEqual(self.load(pinned, key="").api_key, "sk-or-v1-file")
+        self.assertEqual(self.load(pinned, key="sk-or-v1-env").api_key, "sk-or-v1-env")
+        for mode, text in [(0o640, "sk-or-v1-file"), (0o604, "sk-or-v1-file"), (0o600, "  \n"),
+                           (0o600, "sk-or-v1 file")]:
+            key_file.write_text(text)
+            key_file.chmod(mode)
+            with self.assertRaises(ConfigError, msg=(oct(mode), text)) as caught:
+                self.load(pinned, key="")
+            self.assertNotIn("sk-or-v1", str(caught.exception))
+        key_file.unlink()
+        with self.assertRaises(ConfigError) as caught:
+            self.load(pinned, key="")
+        self.assertIn("openrouter.key", str(caught.exception))
+
     def test_key_never_sent_to_other_endpoints(self):
         config = self.load('boards_file = "b.json"\n[model]\nbase_url = "http://localhost:11434/v1"\nslug = "q"\n')
         self.assertIsNone(config.api_key)

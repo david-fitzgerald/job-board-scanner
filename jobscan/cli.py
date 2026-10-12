@@ -5,7 +5,7 @@ import logging
 import sys
 from pathlib import Path
 
-from jobscan import discover, evaluate, scan, tag
+from jobscan import discover, evaluate, scan, store, tag
 from jobscan.config import ConfigError, jobscan_home, load_config, load_profile
 from jobscan.crawl import CrawlError
 
@@ -55,7 +55,11 @@ def _discover(home: Path) -> int:
     try:
         _setup_logging(home)
         with _run_lock(home):
-            outcome = discover.discover(home)
+            conn = store.open_db(home)
+            try:
+                outcome = discover.discover(conn)
+            finally:
+                conn.close()
     except ConfigError as e:
         print(f"jobscan: {e}", file=sys.stderr)
         return EXIT_USAGE

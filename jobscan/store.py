@@ -169,6 +169,11 @@ def replace_discovered(conn: sqlite3.Connection, boards: list[Board], now: str) 
         )
 
 
+def discovered_at(conn: sqlite3.Connection) -> str | None:
+    """When the discovered list was last replaced (every row carries that time), or None when it's empty."""
+    return conn.execute("SELECT MAX(discovered) FROM boards").fetchone()[0]
+
+
 def live_discovered(conn: sqlite3.Connection) -> list[Board]:
     """Discovered boards short of DEAD_AFTER consecutive 404s. A discovered board's company name is its slug."""
     rows = conn.execute("SELECT ats, slug, api_url FROM boards WHERE not_found < ? ORDER BY id", (DEAD_AFTER,))
