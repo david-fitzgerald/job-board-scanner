@@ -1,9 +1,24 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "jobscan"
 version = "0.1.0"
 description = "Self-hosted job-board scanner for tech jobs: Ashby boards, title and location filter, LLM tags with verified quotes, markdown digest"
 requires-python = ">=3.11"
 dependencies = []
+readme = "README.md"
+license = "MIT"
+
+[project.scripts]
+jobscan = "jobscan.cli:main"
+
+[tool.setuptools]
+packages = ["jobscan"]
+
+[tool.setuptools.package-data]
+jobscan = ["tags.toml"]
 
 [tool.ruff]
 target-version = "py311"
