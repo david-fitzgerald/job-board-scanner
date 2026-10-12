@@ -147,6 +147,16 @@ def pending(conn: sqlite3.Connection, profile: str, boards: set[str]) -> Iterato
         )
 
 
+def open_counts(conn: sqlite3.Connection, boards: set[str]) -> dict[str, int]:
+    """Open postings per board, every role, not only matches: a rough size signal. A board that failed this run
+    keeps its last-known count."""
+    counts = dict.fromkeys(boards, 0)
+    for r in conn.execute("SELECT board, COUNT(*) AS n FROM postings WHERE closed = 0 GROUP BY board"):
+        if r["board"] in counts:
+            counts[r["board"]] = r["n"]
+    return counts
+
+
 def replace_discovered(conn: sqlite3.Connection, boards: list[Board], now: str) -> None:
     """Make `boards` the discovered set. A board still listed keeps its 404 count: being in an old crawl is no
     evidence it exists today."""

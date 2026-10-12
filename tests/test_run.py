@@ -73,6 +73,7 @@ class RunTest(RunFixture):
         text = Path(path).read_text()
         self.assertIn("## Acme — Enterprise Account Executive · London", text)
         self.assertIn('- founding: **yes** — "Account Executive"', text)
+        self.assertEqual(text.count("· 4 open roles\n"), 2)  # the Berlin and Engineer roles count too
         self.assertNotIn("Berlin", text)
         self.assertEqual(self.run_cli(), (0, ["ae", "0", "-"]))
         self.assertEqual(len(self.digests()), 1)

@@ -111,7 +111,9 @@ def _tag(conn: sqlite3.Connection, matched: list[store.StoredPosting], defs: lis
         log.error("tag_stopped reason=consecutive_failures not_started=%d", len(needed) - len(attempts))
     log.info("tag_done tagged=%d failed=%d cost=%.4f cost_reported=%s reasoning_tokens=%d", tagged,
              len(attempts) - tagged, usage.cost, usage.cost_reported, usage.reasoning_tokens)
-    entries = [digest.DigestEntry(posting=s, tags={d.name: results[s.posting.key][d.name] for d in defs})
+    open_roles = store.open_counts(conn, {s.posting.board for s in matched})
+    entries = [digest.DigestEntry(posting=s, tags={d.name: results[s.posting.key][d.name] for d in defs},
+                                  open_roles=open_roles[s.posting.board])
                for s in matched if len(results[s.posting.key]) == len(defs)]
     return entries, tagged, usage
 

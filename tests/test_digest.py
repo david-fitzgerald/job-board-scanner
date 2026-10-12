@@ -10,11 +10,12 @@ from jobscan.store import StoredPosting
 from jobscan.tag import TagResult
 
 
-def entry(job_id="1", title="Founding Account Executive", tags=None):
+def entry(job_id="1", title="Founding Account Executive", tags=None, open_roles=14):
     p = Posting(key=f"ashby:acme:{job_id}", ats="ashby", board="ashby:acme", company="Acme AI", title=title,
                 location="London", url=f"https://jobs.ashbyhq.com/acme/{job_id}", description="")
     return digest.DigestEntry(posting=StoredPosting(posting=p, input_hash="h",
-                                                    first_seen="2026-10-12T08:00:00.000000+00:00"), tags=tags or {})
+                                                    first_seen="2026-10-12T08:00:00.000000+00:00"), tags=tags or {},
+                              open_roles=open_roles)
 
 
 class RenderTest(unittest.TestCase):
@@ -22,7 +23,8 @@ class RenderTest(unittest.TestCase):
         text = digest.render("david-ae", "2026-10-12", [entry()], carried_over=0)
         self.assertEqual(text, "# david-ae — 2026-10-12 · 1 new\n\n"
                                "## Acme AI — Founding Account Executive · London\n"
-                               "https://jobs.ashbyhq.com/acme/1 · Ashby · first seen 2026-10-12\n")
+                               "https://jobs.ashbyhq.com/acme/1 · Ashby · first seen 2026-10-12 · 14 open roles\n")
+        self.assertIn("· first seen 2026-10-12 · 1 open role\n", digest.render("a", "d", [entry(open_roles=1)], 0))
 
     def test_tag_lines(self):
         tags = {

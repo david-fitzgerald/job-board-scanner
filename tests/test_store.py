@@ -42,6 +42,14 @@ class ApplyFetchTest(unittest.TestCase):
         store.apply_fetch(self.conn, "ashby:acme", (posting("1"),), "2026-10-11T09:00:00.000000+00:00")
         self.assertEqual(self.closed(), {"ashby:acme:1": 0, "ashby:acme:2": 1})
 
+    def test_open_counts_every_open_role_per_board(self):
+        store.apply_fetch(self.conn, "ashby:acme", (posting("1"), posting("2", title="Engineer"), posting("3")),
+                          "2026-10-11T10:00:00.000000+00:00")
+        store.apply_fetch(self.conn, "ashby:acme", (posting("1"), posting("2", title="Engineer")),
+                          "2026-10-11T11:00:00.000000+00:00")
+        store.apply_fetch(self.conn, "ashby:beta", (posting("1", "beta"),), "2026-10-11T10:00:00.000000+00:00")
+        self.assertEqual(store.open_counts(self.conn, {"ashby:acme", "ashby:gone"}), {"ashby:acme": 2, "ashby:gone": 0})
+
     def test_unopenable_database_is_a_config_error(self):
         with tempfile.TemporaryDirectory() as d:
             (Path(d) / "jobscan.sqlite").mkdir()

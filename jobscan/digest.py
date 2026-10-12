@@ -13,6 +13,7 @@ from jobscan.tag import TagResult
 class DigestEntry:
     posting: StoredPosting
     tags: dict[str, TagResult]  # in the profile's tag order
+    open_roles: int  # open postings on the posting's board, all roles
 
 
 UNVALIDATED = "ⓘ"
@@ -32,7 +33,8 @@ def render(profile: str, date: str, entries: list[DigestEntry], carried_over: in
         p = entry.posting.posting
         blocks.append("\n".join([
             f"## {p.company} — {p.title} · {p.location or 'location not given'}",
-            f"{p.url} · {ADAPTERS[p.ats].DISPLAY_NAME} · first seen {entry.posting.first_seen[:10]}",
+            f"{p.url} · {ADAPTERS[p.ats].DISPLAY_NAME} · first seen {entry.posting.first_seen[:10]} · "
+            f"{entry.open_roles} open role{'' if entry.open_roles == 1 else 's'}",
             *(_tag_line(name + (f" {UNVALIDATED}" if name in unvalidated else ""), result)
               for name, result in entry.tags.items()),
         ]))
