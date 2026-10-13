@@ -7,3 +7,14 @@ digests/
 *.egg-info/
 build/
 dist/
+
+# Local harness docs (never published)
+AGENTS.md
+NOTES.md
+TASKS.md
+STATUS.md
+graduation-tracking.md
+idea.md
+SPEC.md
+spikes/
+plans/
