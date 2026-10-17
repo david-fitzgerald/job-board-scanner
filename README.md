@@ -1,7 +1,7 @@
 # job-board-scanner
 
-[![CI](https://github.com/david-fitzgerald/job-board-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/david-fitzgerald/job-board-scanner/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/github/license/david-fitzgerald/job-board-scanner)](LICENSE)
+[![CI](https://github.com/holarchic/job-board-scanner/actions/workflows/ci.yml/badge.svg)](https://github.com/holarchic/job-board-scanner/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/github/license/holarchic/job-board-scanner)](LICENSE)
 
 Self-hosted scanner for tech roles on Ashby, Greenhouse, Gem, Workable, Teamtailor, Personio: LLM-tagged, emailed daily.
 
@@ -85,7 +85,7 @@ The repo is job-board-scanner; the command it installs is still `jobscan`.
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
 source "$HOME/.local/bin/env"
-uv tool install git+https://github.com/david-fitzgerald/job-board-scanner   # fetches Python 3.11+ if needed
+uv tool install git+https://github.com/holarchic/job-board-scanner   # fetches Python 3.11+ if needed
 jobscan ui                     # a page in your browser: your search, key, email and daily run
 jobscan run                    # the first run now, or wait for the daily one; prints your first digest's path
 ```
@@ -119,7 +119,7 @@ Every command has `--help` with examples. `run` exit codes: 0 done, 1 some posti
 
 **Email.** `jobscan email` asks for the address, which of your accounts sends it (the same one, or another such as a Gmail account), and that account's app password (Gmail: [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords), which needs 2-Step Verification; iCloud: [account.apple.com](https://account.apple.com), App-Specific Passwords). It sends a test email and saves the settings in `~/.jobscan/email.toml`, readable only by you, once your mail server accepts it. From then on every run with a digest emails it; a quiet run sends nothing. If sending fails, the run exits 1 and says so in the notification. Gmail and iCloud work; personal Outlook.com and Hotmail accounts don't (Microsoft allows only OAuth sign-in). Google offers no app passwords to accounts under Advanced Protection or signing in only with security keys, and a Workspace admin can turn them off. Other providers work if their mail server takes the address as its login over TLS.
 
-**Updating and troubleshooting.** `uv tool upgrade jobscan` updates it; the schedule keeps working. `jobscan: command not found`: run `uv tool update-shell` and open a new terminal. A fresh Mac may ask to install Apple's command-line developer tools; say yes. If daily runs stop after a uv update, run `uv tool install --reinstall git+https://github.com/david-fitzgerald/job-board-scanner`, then `jobscan schedule --at 08:00` again (or Save in `jobscan ui`).
+**Updating and troubleshooting.** `uv tool upgrade jobscan` updates it; the schedule keeps working. `jobscan: command not found`: run `uv tool update-shell` and open a new terminal. A fresh Mac may ask to install Apple's command-line developer tools; say yes. If daily runs stop after a uv update, run `uv tool install --reinstall git+https://github.com/holarchic/job-board-scanner`, then `jobscan schedule --at 08:00` again (or Save in `jobscan ui`).
 
 ## Configuration
 

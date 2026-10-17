@@ -26,7 +26,7 @@ RETRY_PAUSES = (2, 10)  # seconds before the 2nd and 3rd tries
 RETRYABLE = {429, 500, 502, 503, 504}
 WORKERS = 8
 IN_FLIGHT = 2 * WORKERS  # boards fetching or fetched but not yet consumed: bounds postings held in memory
-HEADERS = {"User-Agent": "jobscan (+https://github.com/david-fitzgerald/job-board-scanner)"}
+HEADERS = {"User-Agent": "jobscan (+https://github.com/holarchic/job-board-scanner)"}
 # OSError covers URLError, timeouts and resets; ValueError covers bad JSON and bad UTF-8;
 # RecursionError covers deeply nested JSON on Python < 3.14. XML decoding raises BoardError itself.
 FAILURES = (OSError, http.client.HTTPException, ValueError, RecursionError, BoardError)

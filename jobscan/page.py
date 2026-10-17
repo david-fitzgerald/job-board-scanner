@@ -22,7 +22,7 @@ from jobscan.config import (
 from jobscan.preview import Preview
 from jobscan.titles import Outcome
 
-REPOSITORY = "https://github.com/david-fitzgerald/job-board-scanner"
+REPOSITORY = "https://github.com/holarchic/job-board-scanner"
 MOST_TAGS = 99  # custom tags the page edits, plus one blank row to add another; a profile with more is edited in
 # its file
 TEXT_LIMIT = 20_000  # characters in one field; a longer one is refused, never cut
