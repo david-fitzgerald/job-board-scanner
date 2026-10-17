@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import NoReturn
 from xml.parsers.expat import ExpatError
 
-LABEL_PREFIX = "io.github.david-fitzgerald.jobscan."
+LABEL_PREFIX = "io.github.holarchic.jobscan."
 NOT_LOADED = 3  # `launchctl bootout` of a label that isn't loaded: ESRCH, "No such process"
 TIMEOUT = 30
 
